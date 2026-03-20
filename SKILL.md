@@ -1,6 +1,6 @@
 ---
 name: web-access
-version: "1.7.1"
+version: "1.7.2"
 changelog: CHANGELOG.md
 description: |
   网页访问、下载能力。支持任意网站访问，反爬绕过、VPN信号机制、文件下载，智能导航。
@@ -16,11 +16,12 @@ description: |
   4. 去掉日期数字（保留"月"、"日"）
   5. 只取第一个词
 
-  ### 2. 翻译搜索策略
-  当搜索中文关键词无结果时，尝试翻译成英文；反之亦然：
-  - 中文搜不到 → 翻译成英文搜索
-  - 英文搜不到 → 翻译成中文搜索
-  - 例如："沟通交流" → "communication" / "guidance" → "指导原则"
+  ### 2. 翻译搜索策略（针对国外网站）
+  当访问**国外网站**（FDA/EMA/WHO等）但任务用**中文表述**时：
+  - 自动将中文关键词翻译成英文
+  - 翻译采用多种变体（如"指导原则"→ guidance/guideline/document/policy）
+  - 翻译后再按"缩短策略"尝试
+  - 示例：`fda.gov + "指导原则"` → 搜索 "guidance" / "guideline" / "document"
 
   ### 3. 层级深入查找
   - AI分析页面链接，根据关键词打分
