@@ -1,0 +1,23 @@
+# Git Ignore for web-access skill
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OpenClaw (ignore when tracking skill itself)
+# (If this skill is in a larger repo, adjust accordingly)
