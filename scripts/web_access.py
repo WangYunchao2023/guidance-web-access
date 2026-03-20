@@ -64,6 +64,42 @@ KEYWORD_SHORTEN_STRATEGY = [
     lambda k: '发布' if re.search(r'\d+月\d*日?', k) else k,
 ]
 
+# 中文到英文翻译映射（常用医药术语）
+CN_TO_EN = {
+    '指导原则': 'guidance',
+    '技术要求': 'technical requirements',
+    '技术指南': 'guideline',
+    '沟通交流': 'communication',
+    '临床试验': 'clinical trial',
+    '征求意见': 'draft',
+    '药品': 'drug',
+    '注册': 'registration',
+    '生物制品': 'biological',
+    '疫苗': 'vaccine',
+    '抗肿瘤': 'anti-tumor',
+    '罕见病': 'rare disease',
+    '儿童': 'pediatric',
+}
+
+# 英文到中文翻译映射
+EN_TO_CN = {
+    'guidance': '指导原则',
+    'guideline': '指导原则',
+    'technical requirements': '技术要求',
+    'communication': '沟通交流',
+    'clinical trial': '临床试验',
+    'draft': '征求意见',
+    'drug': '药品',
+    'registration': '注册',
+    'biological': '生物制品',
+    'vaccine': '疫苗',
+    'rare disease': '罕见病',
+    'pediatric': '儿童',
+    'ANDA': '仿制药申请',
+    'NDA': '新药申请',
+    'BLA': '生物制品许可申请',
+}
+
 # 相关性关键词
 CDE_RELEVANT_KEYWORDS = [
     '指导原则', '技术指导原则', '技术要求', '技术指南',
@@ -86,12 +122,39 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
 def generate_search_keywords(keyword):
-    """生成搜索关键词列表"""
+    """生成搜索关键词列表（缩短 + 翻译）"""
     keywords = []
+
+    # 1. 先尝试缩短策略
     for strategy in KEYWORD_SHORTEN_STRATEGY:
         kw = strategy(keyword)
         if kw and kw not in keywords:
             keywords.append(kw)
+
+    # 2. 翻译策略：如果原始关键词是中文，尝试翻译成英文
+    if any('\u4e00' <= c <= '\u9fff' for c in keyword):  # 包含中文
+        # 翻译成英文
+        en_translations = []
+        for cn, en in CN_TO_EN.items():
+            if cn in keyword:
+                en_translations.append(en)
+        # 添加组合翻译
+        if en_translations:
+            combined_en = ' '.join(en_translations)
+            if combined_en not in keywords:
+                keywords.append(combined_en)
+            # 添加单个翻译
+            for en in en_translations:
+                if en not in keywords:
+                    keywords.append(en)
+
+    # 3. 翻译策略：如果原始关键词是英文，尝试翻译成中文
+    else:  # 可能是英文
+        for en, cn in EN_TO_CN.items():
+            if en.lower() in keyword.lower():
+                if cn not in keywords:
+                    keywords.append(cn)
+
     return keywords
 
 def is_relevant_link(link_text, keyword):
