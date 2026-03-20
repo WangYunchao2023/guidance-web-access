@@ -54,8 +54,14 @@ KEYWORD_SHORTEN_STRATEGY = [
     lambda k: k,  # 原始关键词
     lambda k: k.replace('指导原则', '').replace('技术要求', '').replace('技术指南', '').strip(),
     lambda k: k.replace('征求意见稿', '').replace('公开征求', '').replace('（征求意见稿）', '').strip(),
-    lambda k: ''.join([c for c in k if not c.isdigit]).replace('年月日', '').strip(),
-    lambda k: k.split()[0] if k.split() else k,
+    # 日期处理：保留"月"和"日"
+    lambda k: re.sub(r'\d+', '', k).replace('年月日', '').strip() if k else k,
+    # 保留数字中的关键部分
+    lambda k: re.sub(r'[年月日]', '', k).strip() if k else k,
+    # 只取第一个词
+    lambda k: k.split()[0] if k and k.split() else k,
+    # 如果是日期格式，尝试搜索"发布"
+    lambda k: '发布' if re.search(r'\d+月\d*日?', k) else k,
 ]
 
 # 相关性关键词
@@ -282,7 +288,8 @@ async def deep_navigate_cde(keyword, page):
                 except Exception as e:
                     pass
 
-            log(f"      {page_name}: +{len([r for r in results if page_name in r.get(\"source\", \"\")])} 条")
+            page_results = [r for r in results if page_name in r.get("source", "")]
+            log(f"      {page_name}: +{len(page_results)} 条")
 
         except Exception as e:
             log(f"      {page_name} 失败: {str(e)[:30]}")
