@@ -313,18 +313,57 @@ async def deep_navigate_cde(keyword, page):
 
     return results
 
+def filter_by_date(links, keyword):
+    """根据日期过滤结果"""
+    # 检查是否包含日期关键词
+    date_match = re.search(r'(\d{1,2})月(\d{1,2})', keyword)
+    if not date_match:
+        return links  # 没有日期关键词，返回全部
+
+    target_month = int(date_match.group(1))
+    target_day = int(date_match.group(2))
+
+    filtered = []
+    for link in links:
+        text = link.get('text', '')
+        # 在文本中查找日期
+        dates = re.findall(r'(\d{4})[年/-]?(\d{1,2})[月/-]?(\d{1,2})', text)
+        matched = False
+        for d in dates:
+            month = int(d[1])
+            day = int(d[2])
+            if month == target_month and day == target_day:
+                filtered.append(link)
+                matched = True
+                break
+        # 也检查链接标题中的日期
+        if not matched and ('指导原则' in text or '通告' in text or '发布' in text):
+            filtered.append(link)
+
+    return filtered
+
 def filter_relevant(links, keyword):
     relevant = []
     kw = keyword.lower()
     has_core = any(k in kw for k in ['指导原则', '技术要求', '沟通交流', '通告', '发布'])
+
+    # 检查是否有日期
+    has_date = bool(re.search(r'\d+月\d+日', keyword))
+
     for link in links:
         text = link.get('text', '').lower()
+
         if has_core:
             if any(k in text for k in CDE_RELEVANT_KEYWORDS):
                 relevant.append(link)
         else:
             if sum(1 for k in CDE_RELEVANT_KEYWORDS if k in text) >= 2:
                 relevant.append(link)
+
+    # 如果有关键词包含日期，进行日期过滤
+    if has_date:
+        relevant = filter_by_date(relevant, keyword)
+
     return relevant
 
 def merge_and_deduplicate(all_results):
