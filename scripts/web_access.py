@@ -64,41 +64,69 @@ KEYWORD_SHORTEN_STRATEGY = [
     lambda k: '发布' if re.search(r'\d+月\d*日?', k) else k,
 ]
 
-# 中文到英文翻译映射（常用医药术语）
-CN_TO_EN = {
-    '指导原则': 'guidance',
-    '技术要求': 'technical requirements',
-    '技术指南': 'guideline',
-    '沟通交流': 'communication',
-    '临床试验': 'clinical trial',
-    '征求意见': 'draft',
-    '药品': 'drug',
-    '注册': 'registration',
-    '生物制品': 'biological',
-    '疫苗': 'vaccine',
-    '抗肿瘤': 'anti-tumor',
-    '罕见病': 'rare disease',
-    '儿童': 'pediatric',
+# 中文到英文翻译映射（常用医药术语）- 多种翻译方式
+CN_TO_EN_VARIANTS = {
+    '指导原则': ['guidance', 'guideline', 'document', 'policy'],
+    '技术要求': ['technical requirements', 'technical guidance', 'requirements'],
+    '技术指南': ['guideline', 'guidance', 'technical guidance'],
+    '沟通交流': ['communication', 'meeting', 'consultation', 'dialogue'],
+    '临床试验': ['clinical trial', 'clinical study', 'clinical investigation'],
+    '征求意见': ['draft', 'draft guidance', 'public comment'],
+    '药品': ['drug', 'medicine', 'pharmaceutical', 'medication'],
+    '注册': ['registration', 'regulatory', 'approval', 'filing'],
+    '生物制品': ['biological', 'biologics', 'biotechnology'],
+    '疫苗': ['vaccine', 'vaccination', 'immunization'],
+    '抗肿瘤': ['anti-tumor', 'anticancer', 'oncology', 'tumor'],
+    '罕见病': ['rare disease', 'orphan drug', 'orphan disease'],
+    '儿童': ['pediatric', 'children', 'pediatrics'],
+    '仿制药': ['generic', 'ANDA', 'generic drug'],
+    '新药': ['new drug', 'NDA', 'innovative drug'],
+    '审评': ['review', 'evaluation', 'assessment', 'approval'],
 }
 
-# 英文到中文翻译映射
-EN_TO_CN = {
-    'guidance': '指导原则',
-    'guideline': '指导原则',
-    'technical requirements': '技术要求',
-    'communication': '沟通交流',
-    'clinical trial': '临床试验',
-    'draft': '征求意见',
-    'drug': '药品',
-    'registration': '注册',
-    'biological': '生物制品',
-    'vaccine': '疫苗',
-    'rare disease': '罕见病',
-    'pediatric': '儿童',
-    'ANDA': '仿制药申请',
-    'NDA': '新药申请',
-    'BLA': '生物制品许可申请',
-}
+# 判断是否需要翻译（目标网站是国外网站）
+def should_translate(target_site):
+    """判断目标网站是否需要翻译"""
+    foreign_sites = ['fda.gov', 'ema.europa.eu', 'who.int', 'ich.org', 'pmda.go.jp']
+    return any(site in target_site.lower() for site in foreign_sites)
+
+def generate_translated_keywords(keyword, target_site=''):
+    """生成翻译后的关键词列表"""
+    keywords = []
+
+    # 判断是否需要翻译
+    need_translate = should_translate(target_site) or not any('\u4e00' <= c <= '\u9fff' for c in keyword)
+
+    if need_translate:
+        # 中文关键词翻译成英文
+        if any('\u4e00' <= c <= '\u9fff' for c in keyword):
+            # 提取需要翻译的中文词
+            for cn, en_variants in CN_TO_EN_VARIANTS.items():
+                if cn in keyword:
+                    # 添加各种翻译变体
+                    for en in en_variants:
+                        # 替换中文词为英文
+                        kw = keyword.replace(cn, en)
+                        if kw and kw not in keywords:
+                            keywords.append(kw)
+                        # 也添加单独翻译词
+                        if en not in keywords:
+                            keywords.append(en)
+
+            # 如果没有匹配到任何词，尝试直接翻译整个关键词
+            if not keywords:
+                # 简单处理：提取第一个词翻译
+                words = keyword.split()
+                for word in words:
+                    for cn, en_variants in CN_TO_EN_VARIANTS.items():
+                        if word == cn:
+                            keywords.extend([e for e in en_variants if e not in keywords])
+                            break
+        else:
+            # 英文关键词，保留原样
+            keywords.append(keyword)
+
+    return keywords
 
 # 相关性关键词
 CDE_RELEVANT_KEYWORDS = [
@@ -121,39 +149,22 @@ UA_POOL = [
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
-def generate_search_keywords(keyword):
+def generate_search_keywords(keyword, target_site=''):
     """生成搜索关键词列表（缩短 + 翻译）"""
     keywords = []
 
-    # 1. 先尝试缩短策略
+    # 1. 先尝试缩短策略（原始关键词）
     for strategy in KEYWORD_SHORTEN_STRATEGY:
         kw = strategy(keyword)
         if kw and kw not in keywords:
             keywords.append(kw)
 
-    # 2. 翻译策略：如果原始关键词是中文，尝试翻译成英文
-    if any('\u4e00' <= c <= '\u9fff' for c in keyword):  # 包含中文
-        # 翻译成英文
-        en_translations = []
-        for cn, en in CN_TO_EN.items():
-            if cn in keyword:
-                en_translations.append(en)
-        # 添加组合翻译
-        if en_translations:
-            combined_en = ' '.join(en_translations)
-            if combined_en not in keywords:
-                keywords.append(combined_en)
-            # 添加单个翻译
-            for en in en_translations:
-                if en not in keywords:
-                    keywords.append(en)
-
-    # 3. 翻译策略：如果原始关键词是英文，尝试翻译成中文
-    else:  # 可能是英文
-        for en, cn in EN_TO_CN.items():
-            if en.lower() in keyword.lower():
-                if cn not in keywords:
-                    keywords.append(cn)
+    # 2. 翻译策略：如果是国外网站 + 中文关键词，需要翻译
+    if target_site:
+        translated = generate_translated_keywords(keyword, target_site)
+        for kw in translated:
+            if kw and kw not in keywords:
+                keywords.append(kw)
 
     return keywords
 
@@ -359,12 +370,13 @@ async def deep_navigate_cde(keyword, page):
 
     return results
 
-async def search_cde(keyword, page):
+async def search_cde(keyword, page, target_site='cde.org.cn'):
     """CDE搜索框搜索"""
     results = []
     seen = set()
 
-    keywords = generate_search_keywords(keyword)
+    # 根据目标网站生成关键词
+    keywords = generate_search_keywords(keyword, target_site)
     log(f"  🔑 关键词策略: {keywords}")
 
     for kw in keywords:
@@ -437,10 +449,11 @@ def merge_and_deduplicate(all_results):
 
     return unique
 
-async def download_cde(keyword):
+async def download_cde(keyword, target_site='cde.org.cn'):
     """CDE搜索主函数 - v1.7.1"""
     log(f"🔍 CDE搜索: {keyword}")
     log(f"📂 保存到: ~/Documents/工作/法规指导原则")
+    log(f"🌐 目标网站: {target_site}")
 
     from playwright.async_api import async_playwright
 
@@ -454,7 +467,7 @@ async def download_cde(keyword):
 
         # 方式1: 搜索框搜索
         log("→ 方式1: 搜索框搜索...")
-        search_results = await search_cde(keyword, page)
+        search_results = await search_cde(keyword, page, target_site)
         all_results.extend(search_results)
 
         # 方式2: 层级深入查找（AI判断点击哪些链接）
@@ -498,21 +511,23 @@ async def download_cde(keyword):
 async def main():
     print("=" * 50)
     print("web-access skill v1.7.1 (2026-03-20)")
-    print("  优化版: 层级深入查找（AI判断点击）")
+    print("  优化版: 层级深入查找 + 翻译搜索")
     print("=" * 50)
 
     if len(sys.argv) < 3:
         print("\n使用方法:")
-        print("  python web_access.py cde <关键词>")
+        print("  python web_access.py cde <关键词> [目标网站]")
         print("  python web_access.py cde 沟通交流")
         print("  python web_access.py cde 3月9日")
+        print("  python web_access.py cde 指导原则 fda.gov")
         return
 
     action = sys.argv[1]
     keyword = sys.argv[2] if len(sys.argv) > 2 else ""
+    target_site = sys.argv[3] if len(sys.argv) > 3 else 'cde.org.cn'
 
     if action == "cde":
-        await download_cde(keyword)
+        await download_cde(keyword, target_site)
     else:
         print(f"未知动作: {action}")
 
