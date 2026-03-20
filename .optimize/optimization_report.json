@@ -1,0 +1,16 @@
+{
+  "skill_name": "web-access",
+  "skill_path": "/home/wangyc/.openclaw/workspace-cortana/skills/web-access",
+  "timestamp": "2026-03-20T15:32:15.933485",
+  "max_rounds": 3,
+  "threshold": 0.9,
+  "total_rounds": 1,
+  "final_evaluation": {
+    "total": 5,
+    "successes": 5,
+    "failures": 0,
+    "success_rate": 1.0,
+    "failed_list": []
+  },
+  "converged": true
+}
