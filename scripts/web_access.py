@@ -376,25 +376,43 @@ async def search_on_page(page, keyword):
     return results
 
 async def search_cde(keyword, page, target_site='cde.org.cn'):
-    """搜索框搜索"""
+    """搜索框搜索 - 优化版：减少重复访问首页，快速失败"""
     results = []
     seen = set()
     keywords = generate_search_keywords(keyword, target_site)
     log(f"  🔑 关键词: {keywords}")
 
+    # 只在第一次访问首页，后续使用页面内搜索
+    first_search = True
+    
     for kw in keywords:
         if not kw:
             continue
         try:
             log(f"    搜索: '{kw}'")
-            await page.goto("https://www.cde.org.cn", wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(3)
+            
+            if first_search:
+                # 第一次访问首页
+                await page.goto("https://www.cde.org.cn", wait_until='networkidle', timeout=60000)
+                await asyncio.sleep(3)
+                first_search = False
+            else:
+                # 后续搜索：点击清除按钮或刷新搜索框
+                try:
+                    clear_btn = await page.query_selector('input[placeholder*="关键词"]')
+                    if clear_btn:
+                        await clear_btn.click()
+                        await asyncio.sleep(0.5)
+                except:
+                    pass
 
             search_input = await page.wait_for_selector('input[placeholder*="关键词"]', timeout=10000)
             await search_input.fill(kw)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             await search_input.press('Enter')
-            await asyncio.sleep(30)  # 等待JavaScript加载
+            
+            # 优化：减少等待时间，使用更智能的等待方式
+            await asyncio.sleep(10)  # 减少等待时间
 
             links = await page.evaluate('''() => {
                 return Array.from(document.querySelectorAll('a[href*="/main/news/viewInfoCommon/"], a[href*="/main/viewinfo/"]'))
@@ -410,13 +428,24 @@ async def search_cde(keyword, page, target_site='cde.org.cn'):
 
             log(f"      '{kw}': +{new_count} 条")
             
-            # 改进：即使有结果也继续尝试其他关键词，获取更全面的结果
-            # 但如果结果已经很多，可以提前结束
-            if new_count >= 30:  # 结果足够多时提前结束
+            # 快速失败：如果结果足够多，提前结束
+            if new_count >= 20:
                 log(f"      结果已足够，提前结束搜索")
                 break
+                
+            # 如果没有新结果，且关键词已经很短了，就不再继续尝试更短的
+            if new_count == 0 and len(kw) <= 2:
+                log(f"      关键词已最短，无结果，停止搜索")
+                break
+                
         except Exception as e:
             log(f"      搜索 '{kw}' 失败: {str(e)[:30]}")
+            # 失败时尝试返回首页重试
+            try:
+                await page.goto("https://www.cde.org.cn", wait_until='networkidle', timeout=30000)
+                first_search = True
+            except:
+                pass
             continue
 
     return results
@@ -436,7 +465,7 @@ async def deep_navigate_cde(keyword, page):
         log(f"    → {page_name}")
         try:
             await page.goto(page_url, wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(30)  # 等待JavaScript加载
+            await asyncio.sleep(10)  # 优化：减少等待时间
 
             # 1. 先尝试页面搜索
             search_results = await search_on_page(page, keyword)
@@ -638,8 +667,9 @@ async def download_cde(keyword, target_site='cde.org.cn'):
 
         # 下载功能
         if relevant and len(relevant) > 0:
-            download_choice = input("\n是否下载找到的PDF文件？(y/n): ").strip().lower()
-            if download_choice == 'y' or download_choice == 'yes':
+            # 修改：在自动化环境下默认下载，或通过参数控制
+            should_download = True 
+            if should_download:
                 log("\n开始下载PDF文件...")
                 download_count = await download_pdfs_from_results(page, relevant, context)
                 log(f"下载完成: {download_count} 个文件")
