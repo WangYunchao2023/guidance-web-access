@@ -1,14 +1,11 @@
 # user_overrides.yaml - 人工干预记忆库
-# 格式:
-# - task_pattern: "关键词正则表达式"
-#   target_url: "直接跳转的URL"
-#   note: "说明"
-
 overrides:
-  - task_pattern: "沟通交流.*公示"
-    target_url: "https://www.cde.org.cn/main/xxgk/listpage/b408651cf614981140082798e404b9c5"
-    note: "沟通交流公示专栏"
-  
-  - task_pattern: "指南发布"
-    target_url: "https://www.cde.org.cn/main/xxgk/listpage/9f9c74c73e0f8f56a8bfbc646055026d"
-    note: "发布通告/指南发布"
+  - task_pattern: "指导原则"
+    target_url: "https://www.cde.org.cn/zdyz/listpage/2853510d929253719601db17b8a9fd81"
+    search_url: "https://www.cde.org.cn/zdyz/fullsearchpage"
+    note: "指导原则专栏 - 列表与搜索直达"
+    strategy:
+      - action: "click"
+        selector: "#fbtime_start" # 示例选择器
+      - action: "type"
+        text: "2026-03-11"
