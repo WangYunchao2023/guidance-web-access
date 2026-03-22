@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具（优化版）
-版本: 1.7.3 (2026-03-20)
-更新: 修复层级深入查找 - 正确获取详情页日期
+版本: 1.8.1 (2026-03-21)
+更新: 
+- 改进关键词缩短策略（始终尝试多个关键词）
+- 添加意图识别（从任务中提取核心需求）
+- 改进层级查找（先分析页面所有链接再决策）
+- 添加PDF验证功能
+- 使用Playwright下载功能
 
 """
 
@@ -12,13 +17,27 @@ import re
 import os
 import random
 import time
+import subprocess
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, unquote
 import requests
 
+# ==================== PDF验证功能 ====================
+def verify_pdf(filepath):
+    """验证PDF是否能正常打开"""
+    try:
+        # 方法1: 检查文件头
+        with open(filepath, 'rb') as f:
+            header = f.read(5)
+            if header == b'%PDF-':
+                return True, "OK"
+        return False, "Invalid header"
+    except Exception as e:
+        return False, str(e)
+
 # ==================== 配置 ====================
 CONFIG = {
-    'headless': False,
+    'headless': False,  # CDE网站检测headless模式，必须使用可见浏览器
 }
 
 BROWSER_ARGS = [
@@ -42,6 +61,110 @@ CDE_ENTRY_PAGES = {
     '发布通告': 'https://www.cde.org.cn/main/xxgk/listpage/9f9c74c73e0f8f56a8bfbc646055026d',
     '征求意见': 'https://www.cde.org.cn/main/news/listpage/9f9c239c4e4f9f6708a079ec6443f60e',
 }
+
+# ==================== 意图识别 ====================
+# 用户任务类型定义
+TASK_TYPES = {
+    '指导原则': ['指导原则', '技术要求', '技术指南', 'guidance', 'guideline'],
+    '公示': ['公示', '公示信息', '审批公示', '审评公示'],
+    '征求意见': ['征求意见', '草案', '试行', '公开征求'],
+    '政策法规': ['政策法规', '法规', '管理办法', '规定'],
+    '下载': ['下载', 'pdf', 'doc', '附件'],
+}
+
+# 链接类型判断关键词
+LINK_TYPE_PATTERNS = {
+    '指导原则': ['指导原则', '技术要求', '技术指南', 'guidance', 'guideline'],
+    '公示': ['公示', '公示信息', '审批', '优先审评', '突破性治疗', '沟通交流公示'],
+    '征求意见': ['征求意见', '草案', '试行', '公开征求'],
+    '政策法规': ['政策法规', '法规', '管理办法', '规定', 'policy', 'regulat'],
+    '新闻': ['新闻', '动态', '通知', '活动', '党建'],
+}
+
+def extract_task_intent(task_keyword):
+    """
+    从用户任务中提取核心意图
+    返回: (核心需求类型, 保留的关键词)
+    """
+    task = task_keyword.lower()
+    
+    # 找出用户明确提到的内容类型
+    found_types = []
+    for ttype, patterns in TASK_TYPES.items():
+        for pattern in patterns:
+            if pattern.lower() in task:
+                found_types.append(ttype)
+                break
+    
+    # 提取核心关键词（去除类型词后保留的）
+    core_keywords = []
+    
+    # 如果用户提到了"指导原则"，保留它作为核心需求
+    if '指导原则' in task_keyword or 'guidance' in task:
+        core_keywords.append('指导原则')
+    
+    # 如果用户提到了"公示"，保留它
+    if '公示' in task_keyword:
+        core_keywords.append('公示')
+    
+    # 如果用户提到了"征求意见"，保留它
+    if '征求意见' in task_keyword or '草案' in task:
+        core_keywords.append('征求意见')
+    
+    # 如果用户没有明确提到类型，尝试提取其他关键词
+    if not core_keywords:
+        # 保留原始关键词
+        core_keywords.append(task_keyword)
+    
+    # 返回识别的类型和核心关键词
+    intent_type = found_types[0] if found_types else '通用'
+    
+    return intent_type, core_keywords
+
+def filter_links_by_intent(links, intent_type, core_keywords):
+    """
+    根据意图过滤和排序链接
+    - intent_type: 识别的用户意图类型
+    - core_keywords: 核心关键词
+    """
+    if not links:
+        return links
+    
+    # 为每个链接打分
+    scored_links = []
+    for link in links:
+        text = link.get('text', '').lower()
+        href = link.get('href', '').lower()
+        score = 0
+        
+        # 如果识别到特定意图，增加相关链接的分数
+        if intent_type == '指导原则':
+            # 优先选择包含"指导原则"的链接，排除"公示"
+            if any(k in text for k in ['指导原则', '技术要求', '技术指南']):
+                score += 100
+            if '公示' in text and '指导原则' not in text:
+                score -= 100
+        
+        elif intent_type == '公示':
+            # 优先选择包含"公示"的链接
+            if '公示' in text:
+                score += 100
+        
+        elif intent_type == '征求意见':
+            # 优先选择包含"征求意见"的链接
+            if any(k in text for k in ['征求意见', '草案', '试行', '公开征求']):
+                score += 100
+        
+        # 核心关键词匹配加分
+        for kw in core_keywords:
+            if kw.lower() in text or kw.lower() in href:
+                score += 10
+        
+        scored_links.append((score, link))
+    
+    # 按分数排序，返回链接
+    scored_links.sort(reverse=True, key=lambda x: x[0])
+    return [link for score, link in scored_links]
 
 KEYWORD_SHORTEN_STRATEGY = [
     lambda k: k,
@@ -213,7 +336,7 @@ async def search_cde(keyword, page, target_site='cde.org.cn'):
             await search_input.fill(kw)
             await asyncio.sleep(1)
             await search_input.press('Enter')
-            await asyncio.sleep(8)
+            await asyncio.sleep(30)  # 等待JavaScript加载
 
             links = await page.evaluate('''() => {
                 return Array.from(document.querySelectorAll('a[href*="/main/news/viewInfoCommon/"], a[href*="/main/viewinfo/"]'))
@@ -228,26 +351,34 @@ async def search_cde(keyword, page, target_site='cde.org.cn'):
                     new_count += 1
 
             log(f"      '{kw}': +{new_count} 条")
-            if new_count > 0:
+            
+            # 改进：即使有结果也继续尝试其他关键词，获取更全面的结果
+            # 但如果结果已经很多，可以提前结束
+            if new_count >= 30:  # 结果足够多时提前结束
+                log(f"      结果已足够，提前结束搜索")
                 break
-        except:
+        except Exception as e:
+            log(f"      搜索 '{kw}' 失败: {str(e)[:30]}")
             continue
 
     return results
 
 async def deep_navigate_cde(keyword, page):
-    """层级深入查找"""
+    """层级深入查找 - 改进版：先分析再决策"""
     results = []
     seen = set()
 
+    # 提取用户意图
+    intent_type, core_keywords = extract_task_intent(keyword)
     log(f"  🧠 层级深入查找...")
+    log(f"    🎯 意图识别: {intent_type}, 核心关键词: {core_keywords}")
 
     # 访问各个专栏
     for page_name, page_url in CDE_ENTRY_PAGES.items():
         log(f"    → {page_name}")
         try:
             await page.goto(page_url, wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(4)
+            await asyncio.sleep(30)  # 等待JavaScript加载
 
             # 1. 先尝试页面搜索
             search_results = await search_on_page(page, keyword)
@@ -258,22 +389,35 @@ async def deep_navigate_cde(keyword, page):
 
             # 2. 获取所有链接
             all_items = await get_page_links_with_text(page, page_name)
-            log(f"      发现 {len([i for i in all_items if i.get('type') == 'link'])} 个链接")
-
-            # 3. 按分数排序，选择高分的点击
             link_items = [i for i in all_items if i.get('type') == 'link' and i.get('href')]
-            scored = [(score_link(l['text'], keyword), l) for l in link_items]
-            scored.sort(reverse=True, key=lambda x: x[0])
+            log(f"      发现 {len(link_items)} 个链接")
+            
+            # 3. 根据意图过滤链接（不依赖预设关键词，而是根据任务动态调整）
+            if core_keywords:
+                # 使用意图过滤
+                filtered_items = filter_links_by_intent(link_items, intent_type, core_keywords)
+                log(f"      意图过滤后: {len(filtered_items)} 个相关链接")
+                
+                # 打印前几个候选链接供调试
+                for i, item in enumerate(filtered_items[:5]):
+                    log(f"        候选{i+1}: {item.get('text', '')[:40]}")
+                
+                # 选择得分最高的几个链接
+                top_links = filtered_items[:8]
+            else:
+                # 没有核心关键词时使用原有评分
+                scored = [(score_link(l['text'], keyword), l) for l in link_items]
+                scored.sort(reverse=True, key=lambda x: x[0])
+                top_links = [l for s, l in scored if s > 5][:8]
 
-            top_links = [l for s, l in scored if s > 5][:8]  # 提高阈值
-
+            # 4. 访问选中的链接
             for link_info in top_links:
                 if link_info['href'] in seen:
                     continue
                 try:
                     log(f"        → {link_info['text'][:25]}...")
                     await page.goto(link_info['href'], wait_until='networkidle', timeout=60000)
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(15)  # 等待详情页加载
 
                     # 获取详情页内容
                     detail_items = await get_page_links_with_text(page, f'{page_name}-详情')
@@ -283,7 +427,6 @@ async def deep_navigate_cde(keyword, page):
                                 seen.add(item['href'])
                                 results.append(item)
                         elif item.get('type') == 'date':
-                            # 保存日期信息
                             results.append({**item, 'href': link_info['href'], 'source': f'{page_name}-日期'})
 
                     # 翻页
@@ -292,7 +435,7 @@ async def deep_navigate_cde(keyword, page):
                             next_btn = await page.query_selector('a:has-text("下一页")')
                             if next_btn:
                                 await next_btn.click()
-                                await asyncio.sleep(3)
+                                await asyncio.sleep(10)
                                 detail_items = await get_page_links_with_text(page, f'{page_name}-页{p}')
                                 for item in detail_items:
                                     if item.get('type') == 'link' and item.get('href'):
@@ -302,14 +445,14 @@ async def deep_navigate_cde(keyword, page):
                         except:
                             break
 
-                except:
-                    pass
+                except Exception as e:
+                    log(f"        访问失败: {str(e)[:30]}")
 
             page_count = len([r for r in results if page_name in r.get('source', '')])
             log(f"      {page_name}: +{page_count} 条")
 
         except Exception as e:
-            log(f"      {page_name} 失败")
+            log(f"      {page_name} 失败: {str(e)[:30]}")
 
     return results
 
@@ -389,6 +532,10 @@ async def download_cde(keyword, target_site='cde.org.cn'):
 
         all_results = []
 
+        # 提取用户意图
+        intent_type, core_keywords = extract_task_intent(keyword)
+        log(f"🎯 意图识别: {intent_type}, 核心关键词: {core_keywords}")
+
         # 方式1: 搜索框搜索
         log("→ 方式1: 搜索框搜索...")
         search_results = await search_cde(keyword, page, target_site)
@@ -405,9 +552,12 @@ async def download_cde(keyword, target_site='cde.org.cn'):
         unique_results = merge_and_deduplicate(all_results)
         log(f"✓ 合并后共 {len(unique_results)} 条")
 
-        # 相关性过滤
-        relevant = filter_relevant(unique_results, keyword)
-        log(f"✓ 相关内容: {len(relevant)} 条")
+        # 使用意图过滤结果
+        relevant = filter_links_by_intent(unique_results, intent_type, core_keywords)
+        
+        # 额外相关性过滤
+        relevant = filter_relevant(relevant, keyword)
+        log(f"✓ 意图过滤后: {len(relevant)} 条")
 
         # 显示结果
         print("\n" + "=" * 60)
@@ -428,14 +578,137 @@ async def download_cde(keyword, target_site='cde.org.cn'):
 
         log(f"\n✓ 最终 {len(relevant)} 个结果")
 
+        # 下载功能
+        if relevant and len(relevant) > 0:
+            download_choice = input("\n是否下载找到的PDF文件？(y/n): ").strip().lower()
+            if download_choice == 'y' or download_choice == 'yes':
+                log("\n开始下载PDF文件...")
+                download_count = await download_pdfs_from_results(page, relevant, context)
+                log(f"下载完成: {download_count} 个文件")
+
         await browser.close()
 
     return relevant
 
+async def download_pdfs_from_results(page, results, context):
+    """从搜索结果下载PDF文件 - 使用Playwright下载功能"""
+    import os
+    
+    save_dir = os.path.expanduser("~/Documents/工作/法规指导原则")
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    downloaded_count = 0
+    
+    for i, result in enumerate(results[:10]):  # 最多下载前10个
+        title = result.get('text', '')[:50]
+        href = result.get('href', '')
+        
+        if not href:
+            continue
+        
+        log(f"\n[{i+1}] 处理: {title}")
+        
+        try:
+            # 访问详情页
+            await page.goto(href, wait_until='load', timeout=60000)
+            await asyncio.sleep(30)  # 等待JavaScript加载
+            
+            # 查找PDF下载链接 - CDE的下载链接包含 "/main/att/download/"
+            download_links = await page.query_selector_all('a[href*="/main/att/download/"]')
+            
+            if not download_links:
+                log(f"    未找到下载链接")
+                continue
+            
+            log(f"    找到 {len(download_links)} 个下载链接")
+            
+            # 处理每个下载链接
+            for j, link in enumerate(download_links):
+                try:
+                    link_text = await link.inner_text()
+                    link_href = await link.get_attribute('href')
+                    
+                    # 只处理PDF文件
+                    if link_text and '.pdf' in link_text.lower():
+                        full_url = f"https://www.cde.org.cn{link_href}" if link_href.startswith('/') else link_href
+                        
+                        # 清理文件名
+                        filename = link_text.strip()[:60].replace('/', '_').replace('\\', '')
+                        if not filename.endswith('.pdf'):
+                            filename += '.pdf'
+                        
+                        save_path = os.path.join(save_dir, filename)
+                        log(f"    下载: {filename}")
+                        
+                        # 方法1: 使用Playwright下载
+                        try:
+                            async with page.expect_download(timeout=30000) as download_info:
+                                await link.click()
+                            
+                            download = await download_info.value
+                            await download.save_as(save_path)
+                            
+                            # 验证PDF
+                            is_valid, msg = verify_pdf(save_path)
+                            if is_valid:
+                                size = os.path.getsize(save_path)
+                                log(f"    ✓ 下载成功! 大小: {size} bytes")
+                                downloaded_count += 1
+                            else:
+                                log(f"    ✗ PDF验证失败: {msg}")
+                                try:
+                                    os.remove(save_path)
+                                except:
+                                    pass
+                        except Exception as e:
+                            log(f"    Playwright下载失败: {str(e)[:30]}, 尝试curl...")
+                            
+                            
+                            # 方法2: 降级到curl
+                            cookies = await context.cookies()
+                            cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                            
+                            result = subprocess.run(
+                                ['curl', '-L', '-o', save_path, 
+                                 '-H', f'Cookie: {cookie_str}',
+                                 '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                 full_url],
+                                capture_output=True, timeout=60
+                            )
+                            
+                            if os.path.exists(save_path):
+                                is_valid, msg = verify_pdf(save_path)
+                                if is_valid:
+                                    size = os.path.getsize(save_path)
+                                    log(f"    ✓ curl下载成功! 大小: {size} bytes")
+                                    downloaded_count += 1
+                                else:
+                                    log(f"    ✗ PDF验证失败: {msg}")
+                                    try:
+                                        os.remove(save_path)
+                                    except:
+                                        pass
+                        
+                        break  # 找到一个PDF就处理下一个结果
+                        
+                except Exception as e:
+                    log(f"    处理下载链接错误: {str(e)[:30]}")
+                    continue
+            
+            # 返回列表页继续
+            await page.goto("https://www.cde.org.cn", wait_until='load', timeout=30000)
+            await asyncio.sleep(5)
+                
+        except Exception as e:
+            log(f"    错误: {str(e)[:50]}")
+    
+    return downloaded_count
+
 async def main():
     print("=" * 50)
-    print("web-access skill v1.7.3 (2026-03-20)")
-    print("  修复版: 层级深入查找")
+    print("web-access skill v1.8.1 (2026-03-21)")
+    print("  改进版: 意图识别 + 关键词策略 + PDF下载")
     print("=" * 50)
 
     if len(sys.argv) < 3:

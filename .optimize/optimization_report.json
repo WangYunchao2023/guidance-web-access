@@ -1,16 +1,23 @@
 {
   "skill_name": "web-access",
-  "skill_path": "/home/wangyc/.openclaw/workspace-cortana/skills/web-access",
-  "timestamp": "2026-03-20T15:32:15.933485",
-  "max_rounds": 3,
-  "threshold": 0.9,
-  "total_rounds": 1,
-  "final_evaluation": {
-    "total": 5,
-    "successes": 5,
-    "failures": 0,
-    "success_rate": 1.0,
-    "failed_list": []
+  "optimized_name": "web-access-auto-optimized",
+  "timestamp": "2026-03-20T19:49:34.243841",
+  "config": {
+    "max_rounds": 10,
+    "threshold": 0.9,
+    "scenario_count": 5,
+    "manual_tasks": [
+      {
+        "task": "访问CDE查询2024年发布",
+        "judge": "结果需包含2024年"
+      }
+    ]
   },
-  "converged": true
+  "summary": {
+    "total_rounds": 10,
+    "final_success_rate": 0.0,
+    "manual_passed": 0,
+    "manual_total": 1,
+    "converged": false
+  }
 }
