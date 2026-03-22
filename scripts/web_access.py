@@ -411,8 +411,8 @@ async def search_cde(keyword, page, target_site='cde.org.cn'):
             await asyncio.sleep(0.5)
             await search_input.press('Enter')
             
-            # 优化：减少等待时间，使用更智能的等待方式
-            await asyncio.sleep(10)  # 减少等待时间
+            # 等待JavaScript加载
+            await asyncio.sleep(30)
 
             links = await page.evaluate('''() => {
                 return Array.from(document.querySelectorAll('a[href*="/main/news/viewInfoCommon/"], a[href*="/main/viewinfo/"]'))
@@ -427,16 +427,6 @@ async def search_cde(keyword, page, target_site='cde.org.cn'):
                     new_count += 1
 
             log(f"      '{kw}': +{new_count} 条")
-            
-            # 快速失败：如果结果足够多，提前结束
-            if new_count >= 20:
-                log(f"      结果已足够，提前结束搜索")
-                break
-                
-            # 如果没有新结果，且关键词已经很短了，就不再继续尝试更短的
-            if new_count == 0 and len(kw) <= 2:
-                log(f"      关键词已最短，无结果，停止搜索")
-                break
                 
         except Exception as e:
             log(f"      搜索 '{kw}' 失败: {str(e)[:30]}")
@@ -465,7 +455,7 @@ async def deep_navigate_cde(keyword, page):
         log(f"    → {page_name}")
         try:
             await page.goto(page_url, wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(10)  # 优化：减少等待时间
+            await asyncio.sleep(30)  # 等待JavaScript加载
 
             # 1. 先尝试页面搜索
             search_results = await search_on_page(page, keyword)
