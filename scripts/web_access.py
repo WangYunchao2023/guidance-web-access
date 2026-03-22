@@ -62,7 +62,65 @@ CDE_ENTRY_PAGES = {
     '征求意见': 'https://www.cde.org.cn/main/news/listpage/9f9c239c4e4f9f6708a079ec6443f60e',
 }
 
-# ==================== 意图识别 ====================
+import yaml
+
+# ==================== 记忆加载与干预处理 ====================
+def get_user_overrides():
+    """从 user_overrides.yaml 加载人工干预记录"""
+    overrides_path = Path(__file__).parent.parent / "references" / "user_overrides.yaml"
+    if not overrides_path.exists():
+        return []
+    try:
+        with open(overrides_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+            return data.get('overrides', [])
+    except Exception as e:
+        log(f"加载干预记忆失败: {e}")
+        return []
+
+def match_override(keyword):
+    """检查是否有匹配的任务干预"""
+    overrides = get_user_overrides()
+    for entry in overrides:
+        pattern = entry.get('task_pattern')
+        if pattern and re.search(pattern, keyword):
+            log(f"🧠 触发干预记忆: '{pattern}' -> {entry.get('note')}")
+            return entry.get('target_url')
+    return None
+
+def save_new_override(keyword, target_url, note=""):
+    """保存新的人工干预记忆"""
+    overrides_path = Path(__file__).parent.parent / "references" / "user_overrides.yaml"
+    overrides = []
+    if overrides_path.exists():
+        try:
+            with open(overrides_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+                overrides = data.get('overrides', [])
+        except: pass
+    
+    overrides.append({
+        'task_pattern': f".*{keyword}.*",
+        'target_url': target_url,
+        'note': note or f"由用户干预添加: {keyword}"
+    })
+    
+    with open(overrides_path, 'w', encoding='utf-8') as f:
+        yaml.dump({'overrides': overrides}, f, allow_unicode=True)
+    log(f"💾 已保存干预记忆: {keyword}")
+
+# ==================== 增强版搜索策略 ====================
+async def get_ai_keywords(keyword, current_page_text=""):
+    """
+    (模拟) 调用 LLM 生成更聪明的搜索词。
+    在实际运行中，如果是主程序调用，我会在这里动态思考。
+    """
+    # 基础策略
+    variants = generate_search_keywords(keyword)
+    
+    # 补充：根据当前页面内容动态生成的关键词 (待集成 LLM 逻辑)
+    return variants
+
 # 用户任务类型定义
 TASK_TYPES = {
     '指导原则': ['指导原则', '技术要求', '技术指南', 'guidance', 'guideline'],
