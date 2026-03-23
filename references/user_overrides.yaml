@@ -1,30 +1,17 @@
 # user_overrides.yaml - 人工干预记忆库
 # 字段说明：
-# - task_pattern: 支持 {var} 或 .* 通配符提取变量
+# - task_pattern: 支持 .* 正则表达式（第一个 () 捕获组作为变量）
 # - method: 执行方式 - navigate_only | search_only | both（默认）
 #   当 method 明确指定时，脚本只执行该方式，不再双轨并行
-# - strategy: 可选，详细操作步骤（如搜索框输入字段名、点击按钮等）
 overrides:
-  - task_pattern: "XX相关的指导原则"
+  - task_pattern: "(.*)相关的指导原则"
     method: search_only
-    note: "通用模式：通过专栏内搜索查找XX相关指导原则"
+    note: "通用模式：在指导原则专栏搜索页，基于标题检索XX相关内容"
     search_url: "https://www.cde.org.cn/zdyz/fullsearchpage"
-    strategy:
-      - action: "wait_for"
-        selector: "input[name='title'], input[placeholder*='标题']"
-      - action: "type"
-        field: "title"
-        var: "XX"
-      - action: "click"
-        selector: "button[type='submit'], .search-btn"
+    search_field: "title"  # 基于标题搜索
 
   - task_pattern: "指导原则"
     method: both
     target_url: "https://www.cde.org.cn/zdyz/listpage/2853510d929253719601db17b8a9fd81"
     search_url: "https://www.cde.org.cn/zdyz/fullsearchpage"
     note: "指导原则专栏 - 列表与搜索直达"
-    strategy:
-      - action: "click"
-        selector: "#fbtime_start" # 示例选择器
-      - action: "type"
-        text: "2026-03-11"
