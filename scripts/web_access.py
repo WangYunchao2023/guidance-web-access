@@ -139,8 +139,11 @@ async def final_download(page, results):
                 if any(ext in attachment_name.lower() for ext in ['.pdf', '.doc', '.xls', '指导原则', '表', '说明', '附件']):
                     clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_attach = re.sub(r'[\\/:*?"<>|]', '_', attachment_name)
-                    # 避免附件名与标题重复：如果 clean_attach 已包含 clean_title 的核心内容，则省略 clean_title
-                    if clean_attach.startswith(clean_title[:20]) or clean_attach[:20] in clean_title:
+                    # 改进版去重：检查 clean_attach 是否为完整文件标题（非附件占位符）
+                    # 如果附件名本身是完整标题（长度>10 且含"指导原则"等关键词），直接用附件名
+                    # 反之才拼接 clean_title（处理纯附件占位符如"附件1.docx"的情况）
+                    is_proper_title = len(clean_attach) > 10 and any(k in clean_attach for k in ['指导原则', '征求意见稿', '起草说明', '反馈表', '征求意见', '试行', '正式'])
+                    if is_proper_title:
                         fname = f"{publish_date} - {clean_attach}"
                     else:
                         fname = f"{publish_date} - {clean_title} - {clean_attach}"
