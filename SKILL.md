@@ -1,15 +1,15 @@
 ---
-name: web-access-auto-optimized
+name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
 ---
 
-# SKILL.md - Web Access (AI-Intelligent v2.5.1)
+# SKILL.md - Guidance Web Access (v2.6.1)
 
 ## 🌟 核心理念
 - **经验优先 (Experience First)**：系统会优先检索 `user_overrides.yaml`。若匹配任务关键词，将放弃默认路径，直奔“人工经验”锁定的高价值 URL。
-- **智能化感知 (Interface Perception)**：不再硬编码输入框 ID。脚本会自动扫描页面，通过 `placeholder`、`name` 和 `id` 感知哪些是“日期框”、“关键词框”，并动态填充。
-- **关联感知 (Contextual Awareness)**：在列表页不仅看链接标题，还会抓取整行上下文。即使标题里没写日期，只要行首或行尾有日期标签，系统会自动将其与标题“关联匹配”。
-- **严谨执行 (Strict Mode)**：若任务指定日期（如 3月9日），系统会对所有结果进行“日期硬匹配”语义过滤。若无匹配项，将诚实报告“未找到”，绝不混淆。
+- **智能化感知 (Interface Perception)**：不再硬编码输入框 ID。脚本会自动扫描页面，感知输入字段。
+- **语义分级 (v2.6.1 核心)**：智能区分“正文”与“辅助文档”。正文文件（如指导原则）使用干净附件名；辅助文件（如起草说明、反馈表）则强制挂载主标题。
+- **严谨执行 (Strict Mode)**：若任务指定日期，系统会对所有结果进行“日期硬匹配”语义过滤。
 
 ## 🧠 AI 搜索与探索逻辑
 
