@@ -62,3 +62,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 1. 每次修改 SKILL.md 时，在顶部更新 version 字段
 2. 在本文件添加对应的版本变更记录
 3. 使用 Git 提交并标注版本号
+
+---
+
+## [2.7.0] - 2026-03-23
+
+### Added
+- **语义分级引擎 (v2.7.0 核心)**：`extract_task_intent()` 升级为语义分级提取，区分主体词（如"指导原则"）与限定词（如"沟通交流"）
+- **Override 精准匹配**：升级 `match_override()` 支持主体词匹配，"沟通交流指导原则" → 命中"指导原则"经验
+- **限定词二次过滤**：结果在 fuzzy_semantic_filter 之后，增加限定词过滤（有限定词时）
+
+### Changed
+- `main_flow()` 日志增强：打印主体词和限定词，方便追踪匹配逻辑
+- override 匹配时记录 `_matched_on`（匹配依据），用于日志追溯
+
+### Root Cause (本次升级)
+- 用户执行"沟通交流指导原则"时，理解反了：把"沟通交流"当主关键词，"指导原则"当限定词
+- `task_pattern: "指导原则"` 无法匹配完整字符串，但主体词提取后可直接命中
+
+## [2.7.1] - 2026-03-23
+
+### Added
+- **method 字段**：`user_overrides.yaml` 新增 `method` 字段，支持 `navigate_only`、`search_only`、`both`
+- **经验方法明确性**：当经验指定了 method 时，脚本只执行该方式，不再双轨并行
+- **变量通配符支持**：pattern 支持 `XX` 或 `.*` 提取任务中的变量部分
+
+### Changed
+- `match_override()` 支持变量提取（从 pattern 如 "XX相关的指导原则" 提取 "XX"）
+- `main_flow()` 日志增强：打印执行方式，明确标注"仅使用经验指定方式"
+
+### Root Cause (本次升级)
+- 之前即使经验提供了方法，脚本仍然双轨并行（导航+搜索同时进行），导致效率低下且噪音多
+- 用户期望：经验明确指定方法时，只执行该方法
