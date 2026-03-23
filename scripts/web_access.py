@@ -140,19 +140,20 @@ async def final_download(page, results):
                     clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_attach = re.sub(r'[\\/:*?"<>|]', '_', attachment_name)
                     
-                    # v2.6 智能化判定逻辑：
-                    # 1. 判定附件名是否自带“光环”（即本身就是完整的指导原则名称）
-                    is_standalone_title = any(k in clean_attach for k in ['指导原则', '征求意见稿', '试行', '正式'])
-                    # 2. 判定标题是否已经“你中有我”（避免重复拼接）
-                    # 取 clean_title 的核心部分（去掉“关于公开征求”等冗余）进行匹配
+                    # v2.6.1 精准判定逻辑：
+                    # 1. 独立正文：含有指导原则/征求意见稿，但排除辅助性关键词
+                    is_main_doc = any(k in clean_attach for k in ['指导原则', '征求意见稿', '试行', '正式']) \
+                                  and not any(k in clean_attach for k in ['起草说明', '反馈表', '修订说明', '附件', '说明'])
+                    
+                    # 2. 判定标题是否已经“你中有我”（针对那种附件名就是通告全名的情况）
                     core_title = re.sub(r'^关于公开征求《?|》?等.*$', '', clean_title)
                     is_already_contained = core_title[:10] in clean_attach or clean_attach[:10] in core_title
 
-                    if is_standalone_title and is_already_contained:
-                        # 情况A：本身是完整标题且已包含主旨 -> 直接用附件名
+                    if is_main_doc or is_already_contained:
+                        # 正文文件，或附件名已包含主旨 -> 直接用附件名
                         fname = f"{publish_date} - {clean_attach}"
                     else:
-                        # 情况B：是通用附件（如“起草说明”）或不含主旨 -> 必须拼接主标题以保证唯一性
+                        # 辅助文件（如起草说明、反馈表） -> 必须挂载主标题前缀
                         fname = f"{publish_date} - {clean_title} - {clean_attach}"
                     if not fname.lower().endswith(('.pdf', '.docx', '.doc', '.xlsx', '.xls')): fname += ".pdf"
                     fpath = os.path.join(save_dir, fname)
