@@ -137,9 +137,13 @@ async def final_download(page, results):
             for link in d_links:
                 attachment_name = (await link.inner_text()).strip() or "附件"
                 if any(ext in attachment_name.lower() for ext in ['.pdf', '.doc', '.xls', '指导原则', '表', '说明', '附件']):
-                    clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:30])
+                    clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_attach = re.sub(r'[\\/:*?"<>|]', '_', attachment_name)
-                    fname = f"{publish_date} - {clean_title} - {clean_attach}"
+                    # 避免附件名与标题重复：如果 clean_attach 已包含 clean_title 的核心内容，则省略 clean_title
+                    if clean_attach.startswith(clean_title[:20]) or clean_attach[:20] in clean_title:
+                        fname = f"{publish_date} - {clean_attach}"
+                    else:
+                        fname = f"{publish_date} - {clean_title} - {clean_attach}"
                     if not fname.lower().endswith(('.pdf', '.docx', '.doc', '.xlsx', '.xls')): fname += ".pdf"
                     fpath = os.path.join(save_dir, fname)
                     if not os.path.exists(fpath):
@@ -175,5 +179,6 @@ async def main_flow(keyword):
         await browser.close()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2: asyncio.run(main_flow(sys.argv[2]))
+    if len(sys.argv) > 1: asyncio.run(main_flow(sys.argv[1]))
+    else: print("用法: python web_access.py <关键词>")
     print("\n✅ 完成")
