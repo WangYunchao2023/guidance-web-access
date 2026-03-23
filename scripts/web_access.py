@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具（全要素泛化版）
-版本: 2.6.1 (2026-03-23)
-核心逻辑：语义级文件名智能判定（v2.6.1 核心：智能区分正文与辅助文档）
+版本: 2.7.0 (2026-03-23)
+核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级（v2.7.0 核心：理解"主体>限定词"层级关系，override 匹配更精准）
 """
 
 import asyncio, sys, re, os, random, time, subprocess, yaml
@@ -33,22 +33,81 @@ def match_override(keyword):
         if re.search(entry.get('task_pattern', ''), keyword): return entry
     return None
 
+# ==================== 🧠 语义分级引擎 (v2.7.0) ====================
+# 核心升级：从"关键词堆砌"升级为"主谓理解"
+# 主体词（如"指导原则"）决定搜索范围，限定词（如"沟通交流"）负责结果过滤
+
+PRIMARY_KEYWORDS = ['指导原则', '法规', '征求意见', '通告', '指导原则', '公告']
+QUALIFIER_KEYWORDS = ['沟通交流', '化药', '生物制品', '中药', '仿制药', '创新药', '通用', '通用技术']
+
 def extract_task_intent(task_keyword):
+    """语义分级提取：区分主体词与限定词"""
+    # 1. 提取日期
     date_match = re.search(r'(\d{1,2})月(\d{1,2})', task_keyword)
     target_date = f"{time.strftime('%Y')}-{date_match.group(1).zfill(2)}-{date_match.group(2).zfill(2)}" if date_match else None
-    kws = [k for k in ['指导原则', '法规', '征求意见', '通告'] if k in task_keyword] or [task_keyword]
-    return { 
-        'date': target_date, 
-        'query': " ".join(kws), 
+    raw_date_str = re.sub(r'[^0-9月日]', '', task_keyword) if date_match else ''
+    
+    # 2. 语义分级：区分主体词 vs 限定词
+    primary_kws = [k for k in PRIMARY_KEYWORDS if k in task_keyword]
+    qualifier_kws = [k for k in QUALIFIER_KEYWORDS if k in task_keyword]
+    
+    # 3. 如果没有主体词，检查是否全是限定词（如"沟通交流"单独出现）
+    if not primary_kws:
+        primary_kws = [task_keyword]  # 回退：整句作为主体
+        qualifier_kws = []
+    
+    # 4. 决定主搜索词（用于 override 匹配和入口选择）
+    primary = primary_kws[0] if len(primary_kws) == 1 else (primary_kws[0] if primary_kws else task_keyword)
+    
+    # 5. 构建查询：主体词 + 日期（限定词不参与入口搜索，用于结果过滤）
+    search_query_parts = [primary]
+    if qualifier_kws:
+        search_query_parts.extend(qualifier_kws)
+    if date_match:
+        search_query_parts.append(raw_date_str)
+    
+    return {
+        'date': target_date,
+        'query': " ".join(search_query_parts),
         'original': task_keyword,
-        'date_only': re.sub(r'[^0-9月日]', '', task_keyword) 
+        'primary': primary,            # 主体词：用于 override 匹配
+        'qualifiers': qualifier_kws,   # 限定词列表：用于结果过滤
+        'date_only': raw_date_str,
+        'has_qualifier_only': bool(qualifier_kws) and not primary_kws  # 只有限定词，无主体
     }
+
+def match_override(keyword, primary=None):
+    """升级版 override 匹配：优先匹配主体词"""
+    # 优先用主体词匹配
+    match_key = primary if primary else keyword
+    overrides = get_user_overrides()
+    for entry in overrides:
+        pattern = entry.get('task_pattern', '')
+        if re.search(pattern, match_key):
+            entry_copy = dict(entry)
+            entry_copy['_matched_on'] = pattern
+            return entry_copy
+    # 退而求其次：用原始关键词匹配
+    for entry in overrides:
+        pattern = entry.get('task_pattern', '')
+        if re.search(pattern, keyword):
+            entry_copy = dict(entry)
+            entry_copy['_matched_on'] = pattern
+            return entry_copy
+    return None
 
 # ==================== 🧠 智能化感知与提取 ====================
 
 async def get_links_with_full_context(page):
     return await page.evaluate('''() => {
-        return Array.from(document.querySelectorAll('li, tr, .list_item')).map(row => {
+        // v2.6.2: 排除导航、页脚等非内容区域
+        const contentArea = document.querySelector('.list_main, .list_con, .list_main_content, #content') || document.body;
+        const rows = Array.from(contentArea.querySelectorAll('li, tr, .list_item')).filter(row => {
+            const isNav = row.closest('header, footer, nav, .nav, .menu, .sidebar');
+            return !isNav;
+        });
+        
+        return rows.map(row => {
             const link = row.querySelector('a');
             const rowText = row.innerText || '';
             const dateMatch = rowText.match(/(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2})|(\d{1,2}[-.]\d{1,2})/);
@@ -171,16 +230,35 @@ async def final_download(page, results):
 
 async def main_flow(keyword):
     intent = extract_task_intent(keyword)
-    log(f"🎯 任务: {intent['query']} | 目标日期: {intent['original']}")
+    log(f"🎯 任务: {intent['query']} | 主体: {intent['primary']} | 限定: {intent.get('qualifiers', [])}")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
         page = await browser.new_page()
-        entry = match_override(keyword)
-        pts = { "经验锁定": entry['target_url'] } if entry else CDE_ENTRY_PAGES
-        if entry and entry.get('search_url'): pts["经验搜索"] = entry['search_url']
+        
+        # 升级：优先用主体词匹配 override（支持"沟通交流指导原则" → 命中"指导原则"经验）
+        entry = match_override(keyword, primary=intent.get('primary'))
+        
+        if entry:
+            log(f"🧠 经验命中: {entry.get('note', '')} (匹配依据: {entry.get('_matched_on', '')})")
+            pts = {"经验锁定": entry['target_url']}
+            if entry.get('search_url'): pts["经验搜索"] = entry['search_url']
+        else:
+            # 用主体词查找入口页面
+            primary = intent.get('primary', keyword)
+            target_url = CDE_ENTRY_PAGES.get(primary)
+            pts = {"默认入口": target_url} if target_url else CDE_ENTRY_PAGES
         
         raw_list = await explore_with_pagination(page, intent, pts)
         final_list = fuzzy_semantic_filter(raw_list, intent)
+        
+        # 升级：如果有限定词，进一步过滤结果
+        qualifiers = intent.get('qualifiers', [])
+        if qualifiers and final_list:
+            before = len(final_list)
+            final_list = [r for r in final_list if any(
+                q in (r['text'] + r['full_row']) for q in qualifiers
+            )]
+            log(f"🔍 限定词过滤 '{qualifiers}'：{before} → {len(final_list)} 条")
         
         if not final_list: log("❌ 未发现匹配项。")
         else:
