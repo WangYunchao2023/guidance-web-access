@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.7.2] - 2026-03-24
+
+### Changed
+- 统一版本号至 2.7.1，与脚本头部及 CHANGELOG 保持一致
+
+---
+
 ## [1.7.0] - 2026-03-24
 
 ### Added
