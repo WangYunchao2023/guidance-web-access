@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具（全要素泛化版）
-版本: 2.7.2 (2026-03-24)
-核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 经验方法明确性（v2.7.2）
+版本: 2.7.5 (2026-03-24)
+核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 经验方法明确性（v2.7.5）
+更新：翻译变体由AI助手直接提供（不在脚本内调用LLM），translatable:true时生效
 """
 
 import asyncio, sys, re, os, random, time, subprocess, yaml
@@ -92,6 +93,20 @@ def extract_var_from_match(pattern, keyword):
         pass
     return None
 
+# v2.7.5: 翻译变体由 AI 助手直接提供（不在脚本内调用 LLM）
+# translatable=True 时，由 AI 根据上下文判断并给出翻译候选，
+# 脚本只输出 [TRANSLATION_REQUESTED] 标记供 AI 识别并响应。
+TRANSLATION_REQUEST_MARKER = "[TRANSLATION_REQUESTED]"
+
+def request_translation(cn_query):
+    """
+    v2.7.5: 输出翻译请求标记，通知 AI 助手提供翻译变体。
+    AI 助手看到此标记后，直接在会话中返回翻译结果。
+    """
+    log(f"    {TRANSLATION_REQUEST_MARKER} 中文关键词需要英文翻译: '{cn_query}'")
+    log(f"    💡 请在会话中直接回复英文翻译候选词（多个，用逗号分隔）")
+    return None  # 翻译由 AI 助手直接提供，脚本不继续执行翻译逻辑
+
 def generate_truncated_variants(keyword):
     """生成关键词截短变体，从长到短逐步简化，用于结果少时降级搜索"""
     if not keyword or len(keyword) <= 1:
@@ -143,16 +158,30 @@ def match_override(keyword, primary=None):
 
 async def get_links_with_full_context(page):
     return await page.evaluate('''() => {
-        // v2.6.2: 排除导航、页脚等非内容区域
-        const contentArea = document.querySelector('.list_main, .list_con, .list_main_content, .list_box, #content') || document.body;
-        const rows = Array.from(contentArea.querySelectorAll('li, tr, .list_item, .list_con_li'));
+        // v2.7.3: 新增 .news_item 选择器（CDE指导原则专栏列表页实际结构）
+        const contentArea = document.querySelector('.list_main, .list_con, .list_main_content, .list_box, #content, .news_list') || document.body;
+        const rows = Array.from(contentArea.querySelectorAll('li, tr, .list_item, .list_con_li, .news_item'));
 
         const anyIn = (list, text) => list.some(k => text.includes(k));
 
         return rows.map(row => {
+            // v2.7.3: 特殊处理 .news_item 的日期结构（年.月 和 日 分开在两个 span）
+            let dateMatch = rowText.match(/(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2})|(\d{1,2}[-.]\d{1,2})/);
+            if (!dateMatch && row.classList.contains('news_item')) {
+                const dateSpans = row.querySelectorAll('.news_date span');
+                if (dateSpans.length >= 2) {
+                    const yearMonth = dateSpans[0].innerText.trim(); // "2026.03"
+                    const day = dateSpans[1].innerText.trim();       // "09"
+                    const ymMatch = yearMonth.match(/(\d{4})[-/.年]?(\d{1,2})/);
+                    if (ymMatch) {
+                        const fullDate = `${ymMatch[1]}.${ymMatch[2].padStart(2,'0')}.${day.padStart(2,'0')}`;
+                        dateMatch = [fullDate, fullDate];
+                    }
+                }
+            }
+
             const link = row.querySelector('a');
             const rowText = row.innerText || '';
-            const dateMatch = rowText.match(/(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2})|(\d{1,2}[-.]\d{1,2})/);
 
             // v2.6.3: 内容关键词初步筛选（过滤非实质性通告链接，如"联系我们"等导航噪音）
             const linkText = link ? link.innerText : '';
@@ -193,6 +222,11 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
     elif search_var:
         query = search_var  # 变量优先：如"沟通交流"
         log(f"    [smart_interact] using search_var query: {query!r}")
+    elif intent.get('date') and intent.get('primary'):
+        # v2.7.3: 有日期时，标题框只填主体词，不填日期
+        # 日期由专用日期字段处理，避免"3月9日"被当成标题内容搜索
+        query = intent['primary']
+        log(f"    [smart_interact] 日期+主体词：标题填'{query}'，日期由专用字段处理")
     else:
         query = intent['query']
         log(f"    [smart_interact] using intent query: {query!r}")
@@ -214,16 +248,32 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
                 await page.keyboard.press('Enter')
                 log("    ⌨️ 按下回车")
             filled = True
+        # v2.7.3: layui readonly 日期组件——JS 设置值 + 触发 laydate 事件
         if intent['date'] and any(k in meta for k in ['date', 'time', '日期']):
-            try: await page.fill(f"input[name='{i['name']}']" if i['name'] else f"input[id='{i['id']}']", intent['date']); filled = True
+            try:
+                selector = f"input[name='{i['name']}']" if i['name'] else f"input[id='{i['id']}']"
+                await page.evaluate('''(args) => {
+                    const el = document.querySelector(args.selector);
+                    if (!el) return;
+                    // 绕过 readonly：直接用 Object.getOwnPropertyDescriptor 设置值
+                    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    nativeSetter.call(el, args.value);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    // 额外触发 layui laydate 事件（如果有）
+                    if (window.layui && window.layui.laydate) {
+                        try { window.layui.laydate.render({ elem: el, value: args.value }); } catch(e) {}
+                    }
+                }''', {"selector": selector, "value": intent['date']})
+                filled = True
             except: pass
     if filled:
         # 等待搜索结果加载
         await asyncio.sleep(5)
     return filled
 
-async def explore_with_pagination(page, intent, exploration_points, search_var=None):
-    """search_var: 传入提取的变量，优先作为搜索词使用"""
+async def explore_with_pagination(page, intent, exploration_points, search_var=None, translatable=False):
+    """search_var: 传入提取的变量，优先作为搜索词使用；translatable: 是否启用翻译变体（国外网站）"""
     all_results = []
     seen = set()
     for name, url in exploration_points.items():
@@ -273,9 +323,13 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
             for l in page_links:
                 if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
             
-            # 如果结果少，降级重试（截短策略）
+            # 如果结果少，降级重试（翻译变体 + 截短策略）
             if len(all_results) < 5:
-                if search_var:
+                # v2.7.5: 翻译变体由 AI 助手直接提供（脚本只输出标记）
+                if translatable and search_var:
+                    request_translation(search_var)
+                    log(f"    💡 翻译变体及后续搜索由 AI 助手接管")
+                elif search_var:
                     # 先尝试完整关键词
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, search_var=search_var)
@@ -403,18 +457,28 @@ async def main_flow(keyword):
             method = entry.get('method', 'both')
             pts = {}
 
+            # v2.7.3: 支持 list_urls（数组）——多列表并行探索
+            list_urls = entry.get('list_urls', [])
+
             if method == 'navigate_only':
-                if entry.get('target_url'):
+                if list_urls:
+                    for idx, url in enumerate(list_urls):
+                        pts[f"列表{idx+1}"] = url
+                elif entry.get('target_url'):
                     pts["经验导航"] = entry['target_url']
             elif method == 'search_only':
-                # search_only：用 target_url 作为搜索入口
-                if entry.get('target_url'):
+                # search_only：优先使用 list_urls（多列表并行）
+                if list_urls:
+                    for idx, url in enumerate(list_urls):
+                        pts[f"列表{idx+1}"] = url
+                elif entry.get('target_url'):
                     pts["经验搜索"] = entry['target_url']
                 elif entry.get('search_url'):
                     pts["经验搜索"] = entry['search_url']
             else:  # both
-                if entry.get('target_url'):
-                    pts["经验导航"] = entry['target_url']
+                if list_urls:
+                    for idx, url in enumerate(list_urls):
+                        pts[f"列表{idx+1}"] = url
                 if entry.get('search_url'):
                     pts["经验搜索"] = entry['search_url']
         else:
@@ -428,9 +492,10 @@ async def main_flow(keyword):
 
         # 提取变量（用于 search_only 模式的搜索词）
         search_var = entry.get('_var') if entry else None
-        log(f"    🔍 search_var = {repr(search_var)}")
+        translatable = entry.get('translatable', False) if entry else False
+        log(f"    🔍 search_var = {repr(search_var)}, translatable = {translatable}")
 
-        raw_list = await explore_with_pagination(page, intent, pts, search_var=search_var)
+        raw_list = await explore_with_pagination(page, intent, pts, search_var=search_var, translatable=translatable)
         final_list = fuzzy_semantic_filter(raw_list, intent)
 
         # 如果有限定词，进一步过滤结果
