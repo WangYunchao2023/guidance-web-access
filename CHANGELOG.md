@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.0] - 2026-03-24
+
+### Added
+- **截短策略** (`generate_truncated_variants`)：变量提取后若搜索结果少，自动逐步截短关键词重试。截短顺序：1) 去掉结尾修饰词（相关、指南、技术、产品等）2) 逐步去掉尾部字符
+
+---
+
 ## [1.6.5] - 2026-03-20
 
 ### Added
