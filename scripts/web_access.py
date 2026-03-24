@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 2.8.1 (2026-03-24)
-核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.8.1 通用提取器）
+版本: 2.9.0 (2026-03-24)
+核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
 """
 
@@ -534,21 +534,31 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                     request_translation(effective_sv)
                     log(f"    💡 翻译变体及后续搜索由 AI 助手接管")
                 elif effective_sv:
-                    # 截短策略
-                    variants = generate_truncated_variants(effective_sv)
-                    log(f"    💡 结果仍少({len(all_results)}条),启动截短策略: {variants}")
-                    for var in variants[1:]:
-                        if len(all_results) >= 5:
-                            break
-                        log(f"    🔄 截短重试: '{var}'")
-                        await page.goto(url); await asyncio.sleep(5)
-                        await smart_interact(page, intent, search_var=var)
-                        await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
+                    # v2.9.0: 首次搜索返回0时，不盲目截短，输出AI报告等我决策
+                    if len(all_results) == 0:
+                        log("=" * 60)
+                        log("🤖 AI_REPORT: 首次搜索(sv={!r})结果为0，需AI决策".format(sv))
+                        log(f"   intent.query: {intent.get('query', '')!r}")
+                        log(f"   intent.primary: {intent.get('primary', '')!r}")
+                        log(f"   建议: 重新调用时使用 --extra-filter <二级关键词> 进行二次过滤，")
+                        log(f"         或使用 --search-var <搜索词> 指定不同的搜索词")
+                        log("=" * 60)
+                    else:
+                        # 结果>0但<5时，尝试截短（保留原逻辑）
+                        variants = generate_truncated_variants(effective_sv)
+                        log(f"    💡 结果仍少({len(all_results)}条),启动截短策略: {variants}")
+                        for var in variants[1:]:
+                            if len(all_results) >= 5:
+                                break
+                            log(f"    🔄 截短重试: '{var}'")
+                            await page.goto(url); await asyncio.sleep(5)
+                            await smart_interact(page, intent, search_var=var)
+                            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
 
-                        page_links = await get_links_by_text_content(page, var)
-                        log(f"    📋 '{var}'扫描: {len(page_links)} 条")
-                        for l in page_links:
-                            if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+                            page_links = await get_links_by_text_content(page, var)
+                            log(f"    📋 '{var}'扫描: {len(page_links)} 条")
+                            for l in page_links:
+                                if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
                     if len(all_results) >= 5:
                         log(f"    ✅ 截短成功")
                 elif intent.get('date'):
@@ -592,12 +602,19 @@ def fuzzy_semantic_filter(results, intent):
 
     # 无日期模式:使用 intent 中的关键词进行语义匹配
     query_parts = intent['query'].split()
-    return [r for r in results if any(q in (r['text'] + r['full_row']) for q in query_parts)]
+    filtered = [r for r in results if any(q in (r['text'] + r['full_row']) for q in query_parts)]
+    # v2.9.0: 支持二次过滤关键词（用于复合关键词场景，如"化药+稳定性"）
+    extra_filter = intent.get('extra_filter')
+    if extra_filter and filtered:
+        before = len(filtered)
+        filtered = [r for r in filtered if extra_filter in (r['text'] + r['full_row'])]
+        log(f"🔍 二次过滤'{extra_filter}': {before} → {len(filtered)} 条")
+    return filtered
 
 # ==================== 📥 全要素下载逻辑 ====================
 
 async def final_download(page, results):
-    save_dir = os.path.expanduser("~/Documents/工作/法规指导原则"); os.makedirs(save_dir, exist_ok=True)
+    save_dir = os.path.expanduser("~/Documents/工作/化药稳定性"); os.makedirs(save_dir, exist_ok=True)
     total_count = 0
     for r in results:
         log(f"🔍 详情页提取: {r['text'][:40]}...")
@@ -641,7 +658,7 @@ async def final_download(page, results):
 
 # ==================== 🏁 入口 ====================
 
-async def main_flow(keyword):
+async def main_flow(keyword, extra_filter=None):
     intent = extract_task_intent(keyword)
     log(f"🎯 任务: {intent['query']} | 主体: {intent['primary']} | 限定: {intent.get('qualifiers', [])}")
     async with async_playwright() as p:
@@ -689,7 +706,27 @@ async def main_flow(keyword):
         log(f"📌 执行方式: {method} {'(仅使用经验指定方式,不再双轨并行)' if entry and method != 'both' else '(默认双轨并行)'}")
         log(f"    🔍 search_var = {repr(search_var)}, translatable = {translatable}")
 
+        # v2.9.0: 支持 extra_filter（复合关键词二次过滤）
+        intent['extra_filter'] = extra_filter
+
         raw_list = await explore_with_pagination_v2(page, intent, pts, translatable=translatable)
+
+        # v2.9.0: AI 决策报告点
+        # 如果原始结果为0，输出结构化报告供 AI 分析决策
+        if not raw_list:
+            log("=" * 60)
+            log("🤖 AI_REPORT: 首次搜索结果为 0，AI 决策点")
+            log(f"   关键词: search_var={repr(search_var)}")
+            log(f"   intent.query: {intent.get('query', '')!r}")
+            log(f"   intent.primary: {intent.get('primary', '')!r}")
+            log(f"   intent.qualifiers: {intent.get('qualifiers', [])}")
+            log(f"   intent.date: {intent.get('date')}")
+            log(f"   可用截短变体: {generate_truncated_variants(search_var) if search_var else []}")
+            log(f"   可用 CDE 入口: {list(CDE_ENTRY_PAGES.keys())}")
+            log(f"   建议: 尝试复合关键词拆分搜索+二次过滤，")
+            log(f"         或使用 --extra-filter <二级关键词> 进行二次过滤")
+            log("=" * 60)
+
         final_list = fuzzy_semantic_filter(raw_list, intent)
 
         # 如果有限定词,进一步过滤结果
@@ -709,6 +746,23 @@ async def main_flow(keyword):
         await browser.close()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1: asyncio.run(main_flow(sys.argv[1]))
-    else: print("用法: python web_access.py <关键词>")
+    # v2.9.0: 支持 --extra-filter 参数（用于复合关键词二次过滤）
+    keyword_arg = None
+    extra_filter_arg = None
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == '--extra-filter' and i + 1 < len(args) and not args[i + 1].startswith('--'):
+            extra_filter_arg = args[i + 1]
+            i += 2
+        elif not arg.startswith('--'):
+            keyword_arg = arg
+            i += 1
+        else:
+            i += 1
+    if keyword_arg:
+        asyncio.run(main_flow(keyword_arg, extra_filter=extra_filter_arg))
+    else:
+        print("用法: python web_access.py <关键词> [--extra-filter <二级过滤关键词>]")
     print("\n✅ 完成")
