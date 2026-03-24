@@ -1,10 +1,10 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 2.7.1
+version: 1.7.0
 ---
 
-# SKILL.md - Guidance Web Access (v2.7.1)
+# SKILL.md - Guidance Web Access (v1.7.0)
 
 ## 🌟 核心理念
 - **经验优先 (Experience First)**：系统会优先检索 `user_overrides.yaml`。若匹配任务关键词，将放弃默认路径，直奔“人工经验”锁定的高价值 URL。
