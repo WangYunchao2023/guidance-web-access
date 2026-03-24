@@ -28,10 +28,10 @@ overrides:
     # 依次点击「发布通告 → 查看更多」和「征求意见 → 查看更多」获取最新列表URL
     fallback_navigation:
       - step: "从指导原则专栏首页 https://www.cde.org.cn/zdyz/index 开始"
-        action: "找到左侧"发布通告"行，点击同一行的"更多">"
+        action: "找到左侧'发布通告'行，点击同一行的'更多>'"
         next_step: "在发布通告列表页按发布日期筛选目标日期"
       - step: "发布通告列表"
-        action: "找到左侧"征求意见"行，点击同一行的"更多">"
+        action: "找到左侧'征求意见'行，点击同一行的'更多>'"
         next_step: "在征求意见列表页按发布日期筛选目标日期"
     date_filter: true
     # 列表页 CSS 选择器（人工确认）

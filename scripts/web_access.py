@@ -158,32 +158,52 @@ def match_override(keyword, primary=None):
 
 async def get_links_with_full_context(page):
     return await page.evaluate('''() => {
-        // v2.7.3: 新增 .news_item 选择器（CDE指导原则专栏列表页实际结构）
-        const contentArea = document.querySelector('.list_main, .list_con, .list_main_content, .list_box, #content, .news_list') || document.body;
-        const rows = Array.from(contentArea.querySelectorAll('li, tr, .list_item, .list_con_li, .news_item'));
+        // v2.7.5: 优先使用 #listBox（正文区域），排除侧边栏导航干扰
+        // 注意：CDE列表页中，侧边栏的li是导航，正文的li是.news_item
+        const listBox = document.querySelector('#listBox');
+        // 优先从 #listBox 取 .news_item
+        if (listBox) {
+            var rows = Array.from(listBox.querySelectorAll('.news_item'));
+            if (rows.length > 0) {
+                // 有 .news_item，直接用
+                var contentArea = listBox;
+            } else {
+                // #listBox 无 .news_item，回退到整页（但排除导航）
+                var contentArea = document.body;
+                var rows = Array.from(contentArea.querySelectorAll('li.news_li, .news_item'));
+            }
+        } else {
+            var contentArea = document.querySelector('.list_main, .list_con, .list_main_content, .list_box, #content') || document.body;
+            var rows = Array.from(contentArea.querySelectorAll('li, tr, .list_item, .news_item'));
+        }
 
         const anyIn = (list, text) => list.some(k => text.includes(k));
 
         return rows.map(row => {
-            // v2.7.3: 特殊处理 .news_item 的日期结构（年.月 和 日 分开在两个 span）
-            let dateMatch = rowText.match(/(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2})|(\d{1,2}[-.]\d{1,2})/);
-            if (!dateMatch && row.classList.contains('news_item')) {
-                const dateSpans = row.querySelectorAll('.news_date span');
-                if (dateSpans.length >= 2) {
-                    const yearMonth = dateSpans[0].innerText.trim(); // "2026.03"
-                    const day = dateSpans[1].innerText.trim();       // "09"
-                    const ymMatch = yearMonth.match(/(\d{4})[-/.年]?(\d{1,2})/);
-                    if (ymMatch) {
-                        const fullDate = `${ymMatch[1]}.${ymMatch[2].padStart(2,'0')}.${day.padStart(2,'0')}`;
-                        dateMatch = [fullDate, fullDate];
-                    }
-                }
-            }
-
             const link = row.querySelector('a');
             const rowText = row.innerText || '';
 
-            // v2.6.3: 内容关键词初步筛选（过滤非实质性通告链接，如"联系我们"等导航噪音）
+            // v2.7.5: 优先提取 .news_item 多 span 日期，再尝试 rowText 正则
+            let extractedDate = null;
+            if (row.classList.contains('news_item')) {
+                const dateSpans = row.querySelectorAll('.news_date span');
+                if (dateSpans.length >= 2) {
+                    // span[0] = "2026.03" 或 "2026年03月"，span[1] = "17"
+                    const ymRaw = (dateSpans[0].innerText || '').trim();
+                    const dayRaw = (dateSpans[1].innerText || '').trim();
+                    const ymM = ymRaw.match(/(\d{4})[-/.年]?(\d{1,2})/);
+                    if (ymM) {
+                        extractedDate = ymM[1] + '.' + ymM[2].padStart(2,'0') + '.' + dayRaw.padStart(2,'0');
+                    }
+                }
+            }
+            // 回退：rowText 内正则
+            if (!extractedDate) {
+                const m = (rowText || '').match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
+                if (m) extractedDate = m[1] + '.' + m[2].padStart(2,'0') + '.' + m[3].padStart(2,'0');
+            }
+
+            // v2.6.3: 内容关键词初步筛选（过滤非实质性通告链接）
             const linkText = link ? link.innerText : '';
             const isContent = anyIn(['指导原则', '通告', '公告', '管理办法', '意见', '征求'], linkText + rowText);
 
@@ -193,7 +213,7 @@ async def get_links_with_full_context(page):
                 href: link.href,
                 text: linkText.trim(),
                 full_row: rowText.replace(/\s+/g, ' '),
-                date: dateMatch ? dateMatch[0] : null
+                date: extractedDate
             } : null;
         }).filter(i => i && i.text.length > 2);
     }''')
@@ -378,6 +398,95 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
             log(f"⚠️ 探索异常: {e}")
     return all_results
 
+# v2.7.5: 支持 per-URL 搜索词的探索函数
+async def explore_with_pagination_v2(page, intent, exploration_points, translatable=False):
+    """
+    exploration_points: dict{name: {"url": str, "sv": str|None}}
+      sv=None  → 不填搜索框，由 smart_interact 的 date+primary 逻辑决定填什么
+      sv=str   → 用指定字符串填搜索框
+    """
+    all_results = []
+    seen = set()
+    for name, pt in exploration_points.items():
+        url = pt["url"]
+        sv = pt.get("sv")  # None means use date+primary logic in smart_interact
+        log(f"🚀 探索: {name} (sv={repr(sv)})")
+        try:
+            await page.goto(url, wait_until='networkidle')
+            # 等待动态内容加载
+            for _wait in range(15):
+                try:
+                    cnt = await page.evaluate('''() => document.querySelectorAll('.news_item, li, tr').length''')
+                    if cnt > 0:
+                        log(f"    ⏳ 等待{_wait+1}秒后检测到内容节点")
+                        break
+                except: pass
+                await asyncio.sleep(1)
+
+            # 填充搜索（sv=None 时 smart_interact 会用 date+primary 逻辑）
+            await smart_interact(page, intent, search_var=sv)
+            await asyncio.sleep(5)
+
+            page_links = await get_links_with_full_context(page)
+            log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
+            # 调试：打印前5条的日期
+            for dl in page_links[:5]:
+                log(f"       [{dl.get('date','无日期')}] {dl['text'][:60]}")
+            for l in page_links:
+                if l['href'] not in seen:
+                    all_results.append(l); seen.add(l['href'])
+
+            # 结果少时：降级策略
+            if len(all_results) < 5:
+                effective_sv = sv if sv else (intent.get('primary') or intent.get('query', ''))
+                if translatable and effective_sv:
+                    request_translation(effective_sv)
+                    log(f"    💡 翻译变体及后续搜索由 AI 助手接管")
+                elif effective_sv:
+                    # 截短策略
+                    variants = generate_truncated_variants(effective_sv)
+                    log(f"    💡 结果仍少({len(all_results)}条)，启动截短策略: {variants}")
+                    for var in variants[1:]:
+                        if len(all_results) >= 5:
+                            break
+                        log(f"    🔄 截短重试: '{var}'")
+                        await page.goto(url); await asyncio.sleep(5)
+                        await smart_interact(page, intent, search_var=var)
+                        await asyncio.sleep(3)
+                        page_links = await get_links_with_full_context(page)
+                        log(f"    📋 '{var}'扫描: {len(page_links)} 条")
+                        for l in page_links:
+                            if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+                    if len(all_results) >= 5:
+                        log(f"    ✅ 截短成功")
+                elif intent.get('date'):
+                    # 无关键词时，尝试仅用日期
+                    await page.goto(url); await asyncio.sleep(5)
+                    await smart_interact(page, intent, try_date_only=True)
+                    await asyncio.sleep(3)
+                    page_links = await get_links_with_full_context(page)
+                    for l in page_links:
+                        if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+
+            # 翻页
+            for p_idx in range(2, 6):
+                next_btn = await page.query_selector('text="下一页"') or await page.query_selector('a:has-text(">")')
+                if next_btn:
+                    cls = await next_btn.get_attribute('class') or ''
+                    txt = (await next_btn.inner_text()).strip()
+                    if 'layui-disabled' not in cls and txt:
+                        await next_btn.click(); await asyncio.sleep(5)
+                        page_links = await get_links_with_full_context(page)
+                        for l in page_links:
+                            if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+                    else:
+                        break
+                else:
+                    break
+        except Exception as e:
+            log(f"⚠️ 探索异常: {e}")
+    return all_results
+
 # ==================== 🧬 模糊语义匹配 ====================
 
 def fuzzy_semantic_filter(results, intent):
@@ -455,47 +564,35 @@ async def main_flow(keyword):
 
             # 根据 method 决定执行方式，不再双轨并行
             method = entry.get('method', 'both')
-            pts = {}
-
-            # v2.7.3: 支持 list_urls（数组）——多列表并行探索
             list_urls = entry.get('list_urls', [])
+            search_url = entry.get('search_url')
+            search_var = entry.get('_var') if entry else None
+            translatable = entry.get('translatable', False)
 
-            if method == 'navigate_only':
-                if list_urls:
-                    for idx, url in enumerate(list_urls):
-                        pts[f"列表{idx+1}"] = url
-                elif entry.get('target_url'):
-                    pts["经验导航"] = entry['target_url']
-            elif method == 'search_only':
-                # search_only：优先使用 list_urls（多列表并行）
-                if list_urls:
-                    for idx, url in enumerate(list_urls):
-                        pts[f"列表{idx+1}"] = url
-                elif entry.get('target_url'):
-                    pts["经验搜索"] = entry['target_url']
-                elif entry.get('search_url'):
-                    pts["经验搜索"] = entry['search_url']
-            else:  # both
-                if list_urls:
-                    for idx, url in enumerate(list_urls):
-                        pts[f"列表{idx+1}"] = url
-                if entry.get('search_url'):
-                    pts["经验搜索"] = entry['search_url']
+            # v2.7.5: pts 改为 dict{name: {"url": str, "sv": str|None}}
+            # sv=None 表示不填搜索框（由 smart_interact 的 date+primary 逻辑决定填什么）
+            # sv=str 表示用该字符串填搜索框
+            pts = {}
+            if list_urls:
+                for idx, url in enumerate(list_urls):
+                    # 列表页：用 intent['primary'] 填标题（sv=None 时 smart_interact 会走 date+primary 分支）
+                    pts[f"列表{idx+1}"] = {"url": url, "sv": None}
+            if search_url:
+                pts["搜索页"] = {"url": search_url, "sv": search_var}
         else:
             # 无经验时：默认双轨并行
             method = 'both'
             primary = intent.get('primary', keyword)
             target_url = CDE_ENTRY_PAGES.get(primary)
-            pts = {"默认入口": target_url} if target_url else CDE_ENTRY_PAGES
+            default_pts = {"默认入口": target_url} if target_url else CDE_ENTRY_PAGES
+            pts = {k: {"url": v, "sv": None} for k, v in default_pts.items()}
+            search_var = None
+            translatable = False
 
         log(f"📌 执行方式: {method} {'(仅使用经验指定方式，不再双轨并行)' if entry and method != 'both' else '(默认双轨并行)'}")
-
-        # 提取变量（用于 search_only 模式的搜索词）
-        search_var = entry.get('_var') if entry else None
-        translatable = entry.get('translatable', False) if entry else False
         log(f"    🔍 search_var = {repr(search_var)}, translatable = {translatable}")
 
-        raw_list = await explore_with_pagination(page, intent, pts, search_var=search_var, translatable=translatable)
+        raw_list = await explore_with_pagination_v2(page, intent, pts, translatable=translatable)
         final_list = fuzzy_semantic_filter(raw_list, intent)
 
         # 如果有限定词，进一步过滤结果
