@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-通用网页访问工具（全要素泛化版）
-版本: 2.7.5 (2026-03-24)
-核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 经验方法明确性（v2.7.5）
-更新：翻译变体由AI助手直接提供（不在脚本内调用LLM），translatable:true时生效
+通用网页访问工具(全要素泛化版)
+版本: 2.8.1 (2026-03-24)
+核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.8.1 通用提取器）
+更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
 """
 
 import asyncio, sys, re, os, random, time, subprocess, yaml
@@ -35,32 +35,32 @@ def match_override(keyword):
     return None
 
 # ==================== 🧠 语义分级引擎 (v2.7.0) ====================
-# 核心升级：从"关键词堆砌"升级为"主谓理解"
-# 主体词（如"指导原则"）决定搜索范围，限定词（如"沟通交流"）负责结果过滤
+# 核心升级:从"关键词堆砌"升级为"主谓理解"
+# 主体词(如"指导原则")决定搜索范围,限定词(如"沟通交流")负责结果过滤
 
 PRIMARY_KEYWORDS = ['指导原则', '法规', '征求意见', '通告', '指导原则', '公告']
 QUALIFIER_KEYWORDS = ['沟通交流', '化药', '生物制品', '中药', '仿制药', '创新药', '通用', '通用技术']
 
 def extract_task_intent(task_keyword):
-    """语义分级提取：区分主体词与限定词"""
+    """语义分级提取:区分主体词与限定词"""
     # 1. 提取日期
     date_match = re.search(r'(\d{1,2})月(\d{1,2})', task_keyword)
     target_date = f"{time.strftime('%Y')}-{date_match.group(1).zfill(2)}-{date_match.group(2).zfill(2)}" if date_match else None
     raw_date_str = re.sub(r'[^0-9月日]', '', task_keyword) if date_match else ''
 
-    # 2. 语义分级：区分主体词 vs 限定词
+    # 2. 语义分级:区分主体词 vs 限定词
     primary_kws = [k for k in PRIMARY_KEYWORDS if k in task_keyword]
     qualifier_kws = [k for k in QUALIFIER_KEYWORDS if k in task_keyword]
 
-    # 3. 如果没有主体词，检查是否全是限定词（如"沟通交流"单独出现）
+    # 3. 如果没有主体词,检查是否全是限定词(如"沟通交流"单独出现)
     if not primary_kws:
-        primary_kws = [task_keyword]  # 回退：整句作为主体
+        primary_kws = [task_keyword]  # 回退:整句作为主体
         qualifier_kws = []
 
-    # 4. 决定主搜索词（用于 override 匹配和入口选择）
+    # 4. 决定主搜索词(用于 override 匹配和入口选择)
     primary = primary_kws[0] if len(primary_kws) == 1 else (primary_kws[0] if primary_kws else task_keyword)
 
-    # 5. 构建查询：主体词 + 日期（限定词不参与入口搜索，用于结果过滤）
+    # 5. 构建查询:主体词 + 日期(限定词不参与入口搜索,用于结果过滤)
     search_query_parts = [primary]
     if qualifier_kws:
         search_query_parts.extend(qualifier_kws)
@@ -71,19 +71,19 @@ def extract_task_intent(task_keyword):
         'date': target_date,
         'query': " ".join(search_query_parts),
         'original': task_keyword,
-        'primary': primary,            # 主体词：用于 override 匹配
-        'qualifiers': qualifier_kws,   # 限定词列表：用于结果过滤
+        'primary': primary,            # 主体词:用于 override 匹配
+        'qualifiers': qualifier_kws,   # 限定词列表:用于结果过滤
         'date_only': raw_date_str,
-        'has_qualifier_only': bool(qualifier_kws) and not primary_kws  # 只有限定词，无主体
+        'has_qualifier_only': bool(qualifier_kws) and not primary_kws  # 只有限定词,无主体
     }
 
 def extract_var_from_match(pattern, keyword):
-    """从 pattern 和 keyword 中提取变量（变量部分）"""
+    """从 pattern 和 keyword 中提取变量(变量部分)"""
     try:
         var_match = re.search(pattern, keyword)
         if var_match and var_match.lastindex is not None:
             return var_match.group(1)
-        # 如果 pattern 包含 XX 占位符，替换为 (.*) 再匹配
+        # 如果 pattern 包含 XX 占位符,替换为 (.*) 再匹配
         if 'XX' in pattern:
             var_pattern = pattern.replace('XX', '(.*)')
             var_match = re.search(var_pattern, keyword)
@@ -93,28 +93,28 @@ def extract_var_from_match(pattern, keyword):
         pass
     return None
 
-# v2.7.5: 翻译变体由 AI 助手直接提供（不在脚本内调用 LLM）
-# translatable=True 时，由 AI 根据上下文判断并给出翻译候选，
+# v2.7.5: 翻译变体由 AI 助手直接提供(不在脚本内调用 LLM)
+# translatable=True 时,由 AI 根据上下文判断并给出翻译候选,
 # 脚本只输出 [TRANSLATION_REQUESTED] 标记供 AI 识别并响应。
 TRANSLATION_REQUEST_MARKER = "[TRANSLATION_REQUESTED]"
 
 def request_translation(cn_query):
     """
-    v2.7.5: 输出翻译请求标记，通知 AI 助手提供翻译变体。
-    AI 助手看到此标记后，直接在会话中返回翻译结果。
+    v2.7.5: 输出翻译请求标记,通知 AI 助手提供翻译变体。
+    AI 助手看到此标记后,直接在会话中返回翻译结果。
     """
     log(f"    {TRANSLATION_REQUEST_MARKER} 中文关键词需要英文翻译: '{cn_query}'")
-    log(f"    💡 请在会话中直接回复英文翻译候选词（多个，用逗号分隔）")
-    return None  # 翻译由 AI 助手直接提供，脚本不继续执行翻译逻辑
+    log(f"    💡 请在会话中直接回复英文翻译候选词(多个,用逗号分隔)")
+    return None  # 翻译由 AI 助手直接提供,脚本不继续执行翻译逻辑
 
 def generate_truncated_variants(keyword):
-    """生成关键词截短变体，从长到短逐步简化，用于结果少时降级搜索"""
+    """生成关键词截短变体,从长到短逐步简化,用于结果少时降级搜索"""
     if not keyword or len(keyword) <= 1:
         return [keyword] if keyword else []
     variants = []
     # 原始词
     variants.append(keyword)
-    # 去掉常见结尾修饰词（按优先级从低到高排列，先去掉的放后面）
+    # 去掉常见结尾修饰词(按优先级从低到高排列,先去掉的放后面)
     suffixes_to_try = [
         (r'(?:相关|指南|指导原则|技术指导原则|技术|工艺|方法|研究|评价|申报|注册|生产|制备|质量|控制|标准|规范).*$', ''),
         (r'(?:产品|制剂|药品|药物).*$', ''),
@@ -125,19 +125,19 @@ def generate_truncated_variants(keyword):
         truncated = re.sub(pattern, '', keyword)
         if truncated and truncated != keyword and truncated not in variants:
             variants.append(truncated)
-    # 逐步缩短：每次去掉尾部1个字符（直到只剩2字）
+    # 逐步缩短:每次去掉尾部1个字符(直到只剩2字)
     for i in range(len(keyword) - 1, 1, -1):
         v = keyword[:i]
         if v not in variants:
             variants.append(v)
-    # 去重，保持顺序
+    # 去重,保持顺序
     seen = set(); unique = []
     for v in variants:
         if v not in seen: seen.add(v); unique.append(v)
     return unique
 
 def match_override(keyword, primary=None):
-    """升级版 override 匹配：支持变量提取 + 方法明确性"""
+    """升级版 override 匹配:支持变量提取 + 方法明确性"""
     match_key = primary if primary else keyword
     overrides = get_user_overrides()
 
@@ -156,73 +156,164 @@ def match_override(keyword, primary=None):
 
 # ==================== 🧠 智能化感知与提取 ====================
 
-async def get_links_with_full_context(page):
-    return await page.evaluate('''() => {
-        // v2.7.5: 优先使用 #listBox（正文区域），排除侧边栏导航干扰
-        // 注意：CDE列表页中，侧边栏的li是导航，正文的li是.news_item
-        const listBox = document.querySelector('#listBox');
-        // 优先从 #listBox 取 .news_item
-        if (listBox) {
-            var rows = Array.from(listBox.querySelectorAll('.news_item'));
-            if (rows.length > 0) {
-                // 有 .news_item，直接用
-                var contentArea = listBox;
-            } else {
-                // #listBox 无 .news_item，回退到整页（但排除导航）
-                var contentArea = document.body;
-                var rows = Array.from(contentArea.querySelectorAll('li.news_li, .news_item'));
+async def get_links_by_text_content(page, search_keyword=None):
+    """
+    v2.8.1: 通用内容提取器 - 基于TreeWalker直接遍历+关键词上下文定位。
+
+    原理:用TreeWalker直接遍历所有文本节点,找到包含关键词的节点,
+    然后向上找到最近的包含链接的容器元素,提取完整条目。
+
+    完全不依赖CSS选择器、结构假设、或段落切分。
+    """
+    return await page.evaluate(r'''
+        (searchKeyword) => {
+        const keyword = searchKeyword || '';
+        const kwLower = keyword.toLowerCase();
+
+        // =============================================
+        // 步骤1: 获取 body innerText
+        // =============================================
+        const bodyText = (document.body.innerText || document.body.textContent || '');
+        const bodyLen = bodyText.trim().length;
+        if (bodyLen === 0) return [];
+
+        // =============================================
+        // 步骤2: 用TreeWalker遍历所有文本节点
+        // =============================================
+        const walker = document.createTreeWalker(
+            document.body,
+            NodeFilter.SHOW_TEXT,
+            null
+        );
+
+        const allTextNodes = [];
+        let node;
+        while (node = walker.nextNode()) {
+            const text = (node.nodeValue || '').trim();
+            if (text.length > 2 && text.length < 500) {
+                allTextNodes.push({
+                    node: node,
+                    text: text,
+                    parent: node.parentElement
+                });
             }
-        } else {
-            var contentArea = document.querySelector('.list_main, .list_con, .list_main_content, .list_box, #content') || document.body;
-            var rows = Array.from(contentArea.querySelectorAll('li, tr, .list_item, .news_item'));
         }
 
-        const anyIn = (list, text) => list.some(k => text.includes(k));
+        // =============================================
+        // 步骤2: 找到包含关键词的文本节点
+        // 注意:关键词可能被拆到多个节点,需要用"节点组"方式匹配
+        // 策略:先按父子关系对相邻节点分组,再检查整组文本是否包含关键词
+        // =============================================
+        const keywordNodes = [];
 
-        return rows.map(row => {
-            const link = row.querySelector('a');
-            const rowText = row.innerText || '';
-
-            // v2.7.5: 优先提取 .news_item 多 span 日期，再尝试 rowText 正则
-            let extractedDate = null;
-            if (row.classList.contains('news_item')) {
-                const dateSpans = row.querySelectorAll('.news_date span');
-                if (dateSpans.length >= 2) {
-                    // span[0] = "2026.03" 或 "2026年03月"，span[1] = "17"
-                    const ymRaw = (dateSpans[0].innerText || '').trim();
-                    const dayRaw = (dateSpans[1].innerText || '').trim();
-                    const ymM = ymRaw.match(/(\d{4})[-/.年]?(\d{1,2})/);
-                    if (ymM) {
-                        extractedDate = ymM[1] + '.' + ymM[2].padStart(2,'0') + '.' + dayRaw.padStart(2,'0');
+        if (kwLower) {
+            // 方案A:直接匹配(大多数情况下有效)
+            const directMatch = allTextNodes.filter(tn => tn.text.toLowerCase().includes(kwLower));
+            if (directMatch.length > 0) {
+                keywordNodes.push(...directMatch);
+            } else {
+                // 方案B:节点组匹配 - 遍历文本节点,检查其父容器内是否有关键词
+                // 思路:如果文本节点的父容器(如div/span)的innerText包含关键词,则该节点算匹配
+                for (const tn of allTextNodes) {
+                    let container = tn.parent;
+                    let depth = 0;
+                    while (container && depth < 5) {
+                        const containerText = (container.innerText || '').toLowerCase();
+                        if (containerText.includes(kwLower)) {
+                            keywordNodes.push(tn);
+                            break;
+                        }
+                        container = container.parentElement;
+                        depth++;
                     }
                 }
             }
-            // 回退：rowText 内正则
-            if (!extractedDate) {
-                const m = (rowText || '').match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
-                if (m) extractedDate = m[1] + '.' + m[2].padStart(2,'0') + '.' + m[3].padStart(2,'0');
+        } else {
+            // 无关键词时:返回所有文本节点
+            keywordNodes.push(...allTextNodes);
+        }
+
+        if (keywordNodes.length === 0) {
+            return [];
+        }
+
+        // =============================================
+        // 步骤3: 对每个关键词节点,提取完整条目
+        // =============================================
+        // 策略:文本节点 → 向上找最近的 Block 容器 → 提取块内所有链接
+        const results = [];
+        const seenHrefs = new Set();
+
+        for (const kNode of keywordNodes) {
+            // 向上找块容器(div/li/tr/td/article)
+            let block = kNode.parent;
+            let depth = 0;
+            while (block && depth < 10) {
+                const tag = block.tagName;
+                if (tag === 'DIV' || tag === 'LI' || tag === 'TR' || tag === 'TD' || tag === 'A' || tag === 'ARTICLE') {
+                    break;
+                }
+                block = block.parentElement;
+                depth++;
+            }
+            // 找不到合适容器就用 body
+            const container = block || document.body;
+
+            // 从容器内提取日期
+            const containerText = container.innerText || '';
+            let date = null;
+            const dateM = containerText.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
+            if (dateM) {
+                date = dateM[1] + '.' + dateM[2].padStart(2,'0') + '.' + dateM[3].padStart(2,'0');
             }
 
-            // v2.6.3: 内容关键词初步筛选（过滤非实质性通告链接）
-            const linkText = link ? link.innerText : '';
-            const isContent = anyIn(['指导原则', '通告', '公告', '管理办法', '意见', '征求'], linkText + rowText);
+            // 从容器内提取所有有效链接
+            const links = container.querySelectorAll('a[href]');
+            for (const link of links) {
+                const href = link.href;
+                const linkText = (link.innerText || '').trim();
+                // 过滤无效链接
+                if (!href || !href.startsWith('http') || href.includes('javascript')) continue;
+                if (linkText.length < 3) continue;
+                // 跳过相同 href
+                if (seenHrefs.has(href)) continue;
+                seenHrefs.add(href);
 
-            if (!isContent) return null;
+                results.push({
+                    href: href,
+                    text: linkText,
+                    full_row: (container.innerText || '').replace(/\s+/g, ' ').trim(),
+                    date: date
+                });
+            }
+        }
 
-            return link ? {
-                href: link.href,
-                text: linkText.trim(),
-                full_row: rowText.replace(/\s+/g, ' '),
-                date: extractedDate
-            } : null;
-        }).filter(i => i && i.text.length > 2);
-    }''')
+        // =============================================
+        // 步骤4: 内容质量过滤
+        // =============================================
+        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多', '更多>'];
+        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见', '规范', '准则', '要求', '技术', '指引', '原则'];
+
+        const filtered = results.filter(r => {
+            const row = (r.full_row || '') + (r.text || '');
+            // 纯噪音
+            if (noiseIndicators.every(n => !row.includes(n))) {
+                // 但没有内容指示词时,文本要足够长
+                if (!contentIndicators.some(c => row.includes(c)) && r.text.length < 15) {
+                    return false;
+                }
+            }
+            return row.length >= 10;
+        });
+
+        return filtered;
+    }''', search_keyword)
 
 async def smart_interact(page, intent, try_date_only=False, search_var=None, search_field=None):
-    """search_var: 传入提取的变量作为搜索词；search_field: 搜索字段类型（title/content/date）"""
+    """search_var: 传入提取的变量作为搜索词;search_field: 搜索字段类型(title/content/date)"""
     try:
         current_url = page.url
-        inputs = await page.evaluate('''() => {
+        inputs = await page.evaluate(r'''() => {
             return Array.from(document.querySelectorAll('input')).map(i => ({ id: i.id, name: i.name, placeholder: i.placeholder, visible: i.offsetWidth > 0 }));
         }''')
         log(f"    [smart_interact] page_url={current_url}, found {len(inputs)} inputs")
@@ -240,26 +331,26 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
         query = intent['date_only']
         log(f"    [smart_interact] using date_only query: {query!r}")
     elif search_var:
-        query = search_var  # 变量优先：如"沟通交流"
+        query = search_var  # 变量优先:如"沟通交流"
         log(f"    [smart_interact] using search_var query: {query!r}")
     elif intent.get('date') and intent.get('primary'):
-        # v2.7.3: 有日期时，标题框只填主体词，不填日期
-        # 日期由专用日期字段处理，避免"3月9日"被当成标题内容搜索
+        # v2.7.3: 有日期时,标题框只填主体词,不填日期
+        # 日期由专用日期字段处理,避免"3月9日"被当成标题内容搜索
         query = intent['primary']
-        log(f"    [smart_interact] 日期+主体词：标题填'{query}'，日期由专用字段处理")
+        log(f"    [smart_interact] 日期+主体词:标题填'{query}',日期由专用字段处理")
     else:
         query = intent['query']
         log(f"    [smart_interact] using intent query: {query!r}")
 
     log(f"🧠 感知到 {len(inputs)} 个输入框: {[i['placeholder'] or i['id'] or i['name'] for i in inputs if i['visible']]}")
     for i in inputs:
-        # v2.6.5: 安全字符串拼接，防止 NoneType 导致崩溃
+        # v2.6.5: 安全字符串拼接,防止 NoneType 导致崩溃
         meta = (str(i['id'] or '') + str(i['name'] or '') + str(i['placeholder'] or '')).lower()
         if any(k in meta for k in ['keyword', '关键词', '标题', 'search']) and i['visible']:
             selector = f"input[placeholder='{i['placeholder']}']" if i['placeholder'] else (f"input[name='{i['name']}']" if i['name'] else f"input[id='{i['id']}']")
             log(f"    ✏️ 填充搜索框: {selector} (填入: {query})")
             await page.fill(selector, query)
-            # 尝试点击搜索按钮（如果存在）
+            # 尝试点击搜索按钮(如果存在)
             search_btn = await page.query_selector('button:has-text("搜索"), .search-btn, #searchBtn, .btn-search')
             if search_btn:
                 await search_btn.click()
@@ -268,19 +359,19 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
                 await page.keyboard.press('Enter')
                 log("    ⌨️ 按下回车")
             filled = True
-        # v2.7.3: layui readonly 日期组件——JS 设置值 + 触发 laydate 事件
+        # v2.7.3: layui readonly 日期组件--JS 设置值 + 触发 laydate 事件
         if intent['date'] and any(k in meta for k in ['date', 'time', '日期']):
             try:
                 selector = f"input[name='{i['name']}']" if i['name'] else f"input[id='{i['id']}']"
-                await page.evaluate('''(args) => {
+                await page.evaluate(r'''(args) => {
                     const el = document.querySelector(args.selector);
                     if (!el) return;
-                    // 绕过 readonly：直接用 Object.getOwnPropertyDescriptor 设置值
+                    // 绕过 readonly:直接用 Object.getOwnPropertyDescriptor 设置值
                     const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
                     nativeSetter.call(el, args.value);
                     el.dispatchEvent(new Event('input', { bubbles: true }));
                     el.dispatchEvent(new Event('change', { bubbles: true }));
-                    // 额外触发 layui laydate 事件（如果有）
+                    // 额外触发 layui laydate 事件(如果有)
                     if (window.layui && window.layui.laydate) {
                         try { window.layui.laydate.render({ elem: el, value: args.value }); } catch(e) {}
                     }
@@ -293,17 +384,17 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
     return filled
 
 async def explore_with_pagination(page, intent, exploration_points, search_var=None, translatable=False):
-    """search_var: 传入提取的变量，优先作为搜索词使用；translatable: 是否启用翻译变体（国外网站）"""
+    """search_var: 传入提取的变量,优先作为搜索词使用;translatable: 是否启用翻译变体(国外网站)"""
     all_results = []
     seen = set()
     for name, url in exploration_points.items():
         log(f"🚀 探索: {name}")
         try:
-            await page.goto(url, wait_until='networkidle')
-            # 等待搜索表单动态加载（最多等15秒）
+            await page.goto(url, wait_until='domcontentloaded')
+            # 等待搜索表单动态加载(最多等15秒)
             for _wait in range(15):
                 try:
-                    inputs_check = await page.evaluate('''() => {
+                    inputs_check = await page.evaluate(r'''() => {
                         const ins = Array.from(document.querySelectorAll('input')).filter(i => i.offsetWidth > 0);
                         return ins.length;
                     }''')
@@ -314,18 +405,18 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
                     pass
                 await asyncio.sleep(1)
             else:
-                log(f"    ⚠️ 等待表单超时，尝试继续...")
-            # 策略 1：正常搜（search_var 优先，如"沟通交流"）
+                log(f"    ⚠️ 等待表单超时,尝试继续...")
+            # 策略 1:正常搜(search_var 优先,如"沟通交流")
             filled = await smart_interact(page, intent, search_var=search_var)
-            
+
             # 等待搜索结果加载
             await asyncio.sleep(5)
-            
-            # 首次扫描（基于搜索结果）
-            page_links = await get_links_with_full_context(page)
-            # 调试：打印页面中所有链接文本
+
+            # 首次扫描(基于搜索结果)
+            page_links = await get_links_by_text_content(page, search_var)
+            # 调试:打印页面中所有链接文本
             try:
-                all_text = await page.evaluate('''() => {
+                all_text = await page.evaluate(r'''() => {
                     const items = document.querySelectorAll('li, tr, .list_item, .list_con_li, .result_item');
                     const result = [];
                     items.forEach(i => { if(i.innerText.trim().length > 3) result.push(i.innerText.trim().substring(0, 80)); });
@@ -337,15 +428,15 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
             except Exception as e:
                 log(f"    🔍 页面片段获取失败: {e}")
             log(f"    📋 首次扫描: 找到 {len(page_links)} 条记录")
-            # 调试：打印前3条的标题
+            # 调试:打印前3条的标题
             for debug_l in page_links[:3]:
                 log(f"       - {debug_l['text'][:50]} | date={debug_l.get('date')}")
             for l in page_links:
                 if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-            
-            # 如果结果少，降级重试（翻译变体 + 截短策略）
+
+            # 如果结果少,降级重试(翻译变体 + 截短策略)
             if len(all_results) < 5:
-                # v2.7.5: 翻译变体由 AI 助手直接提供（脚本只输出标记）
+                # v2.7.5: 翻译变体由 AI 助手直接提供(脚本只输出标记)
                 if translatable and search_var:
                     request_translation(search_var)
                     log(f"    💡 翻译变体及后续搜索由 AI 助手接管")
@@ -354,43 +445,43 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, search_var=search_var)
                     await asyncio.sleep(3)
-                    page_links = await get_links_with_full_context(page)
+                    page_links = await get_links_by_text_content(page, search_var)
                     log(f"    📋 关键词'{search_var}'扫描: 找到 {len(page_links)} 条")
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-                    # 如果仍少，启用截短策略
+                    # 如果仍少,启用截短策略
                     if len(all_results) < 5:
                         variants = generate_truncated_variants(search_var)
-                        log(f"    💡 结果仍少({len(all_results)}条)，启动截短策略: {variants}")
-                        for var in variants[1:]:  # 跳过第一个（就是完整关键词，已试过）
+                        log(f"    💡 结果仍少({len(all_results)}条),启动截短策略: {variants}")
+                        for var in variants[1:]:  # 跳过第一个(就是完整关键词,已试过)
                             if var == search_var:
                                 continue
                             log(f"    🔄 截短重试: '{var}'")
                             await page.goto(url); await asyncio.sleep(5)
                             await smart_interact(page, intent, search_var=var)
                             await asyncio.sleep(3)
-                            page_links = await get_links_with_full_context(page)
+                            page_links = await get_links_by_text_content(page, search_var)
                             log(f"    📋 截短'{var}'扫描: 找到 {len(page_links)} 条")
                             for l in page_links:
                                 if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
                             if len(all_results) >= 5:
-                                log(f"    ✅ 截短成功，获得足够结果")
+                                log(f"    ✅ 截短成功,获得足够结果")
                                 break
                 elif intent.get('date'):
-                    log(f"    💡 结果较少({len(all_results)}条)，尝试仅用日期重搜...")
+                    log(f"    💡 结果较少({len(all_results)}条),尝试仅用日期重搜...")
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, try_date_only=True)
                     await asyncio.sleep(3)
-                    page_links = await get_links_with_full_context(page)
+                    page_links = await get_links_by_text_content(page, search_var)
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-            
+
             # 翻页
             for p_idx in range(2, 6):
                 next_btn = await page.query_selector('text="下一页"') or await page.query_selector('a:has-text(">")')
                 if next_btn and p_idx < 6:
                     await next_btn.click(); await asyncio.sleep(5)
-                    page_links = await get_links_with_full_context(page)
+                    page_links = await get_links_by_text_content(page, search_var)
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
                 else: break
@@ -402,7 +493,7 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
 async def explore_with_pagination_v2(page, intent, exploration_points, translatable=False):
     """
     exploration_points: dict{name: {"url": str, "sv": str|None}}
-      sv=None  → 不填搜索框，由 smart_interact 的 date+primary 逻辑决定填什么
+      sv=None  → 不填搜索框,由 smart_interact 的 date+primary 逻辑决定填什么
       sv=str   → 用指定字符串填搜索框
     """
     all_results = []
@@ -412,31 +503,31 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
         sv = pt.get("sv")  # None means use date+primary logic in smart_interact
         log(f"🚀 探索: {name} (sv={repr(sv)})")
         try:
-            await page.goto(url, wait_until='networkidle')
+            await page.goto(url, wait_until='domcontentloaded')
             # 等待动态内容加载
             for _wait in range(15):
                 try:
-                    cnt = await page.evaluate('''() => document.querySelectorAll('.news_item, li, tr').length''')
+                    cnt = await page.evaluate(r'''() => document.querySelectorAll('.news_item, li, tr').length''')
                     if cnt > 0:
                         log(f"    ⏳ 等待{_wait+1}秒后检测到内容节点")
                         break
                 except: pass
                 await asyncio.sleep(1)
 
-            # 填充搜索（sv=None 时 smart_interact 会用 date+primary 逻辑）
+            # 填充搜索(sv=None 时 smart_interact 会用 date+primary 逻辑)
             await smart_interact(page, intent, search_var=sv)
-            await asyncio.sleep(5)
+            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
 
-            page_links = await get_links_with_full_context(page)
+            page_links = await get_links_by_text_content(page, sv)
             log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
-            # 调试：打印前5条的日期
+            # 调试:打印前5条的日期
             for dl in page_links[:5]:
                 log(f"       [{dl.get('date','无日期')}] {dl['text'][:60]}")
             for l in page_links:
                 if l['href'] not in seen:
                     all_results.append(l); seen.add(l['href'])
 
-            # 结果少时：降级策略
+            # 结果少时:降级策略
             if len(all_results) < 5:
                 effective_sv = sv if sv else (intent.get('primary') or intent.get('query', ''))
                 if translatable and effective_sv:
@@ -445,26 +536,27 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                 elif effective_sv:
                     # 截短策略
                     variants = generate_truncated_variants(effective_sv)
-                    log(f"    💡 结果仍少({len(all_results)}条)，启动截短策略: {variants}")
+                    log(f"    💡 结果仍少({len(all_results)}条),启动截短策略: {variants}")
                     for var in variants[1:]:
                         if len(all_results) >= 5:
                             break
                         log(f"    🔄 截短重试: '{var}'")
                         await page.goto(url); await asyncio.sleep(5)
                         await smart_interact(page, intent, search_var=var)
-                        await asyncio.sleep(3)
-                        page_links = await get_links_with_full_context(page)
+                        await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
+
+                        page_links = await get_links_by_text_content(page, var)
                         log(f"    📋 '{var}'扫描: {len(page_links)} 条")
                         for l in page_links:
                             if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
                     if len(all_results) >= 5:
                         log(f"    ✅ 截短成功")
                 elif intent.get('date'):
-                    # 无关键词时，尝试仅用日期
+                    # 无关键词时,尝试仅用日期
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, try_date_only=True)
                     await asyncio.sleep(3)
-                    page_links = await get_links_with_full_context(page)
+                    page_links = await get_links_by_text_content(page, None)
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
 
@@ -476,7 +568,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                     txt = (await next_btn.inner_text()).strip()
                     if 'layui-disabled' not in cls and txt:
                         await next_btn.click(); await asyncio.sleep(5)
-                        page_links = await get_links_with_full_context(page)
+                        page_links = await get_links_by_text_content(page, None)
                         for l in page_links:
                             if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
                     else:
@@ -490,7 +582,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
 # ==================== 🧬 模糊语义匹配 ====================
 
 def fuzzy_semantic_filter(results, intent):
-    """语义过滤：日期硬匹配 或 关键词匹配"""
+    """语义过滤:日期硬匹配 或 关键词匹配"""
     m = re.search(r'(\d{1,2})月(\d{1,2})', intent['original'])
     if m:
         mon, day = m.group(1), m.group(2)
@@ -498,7 +590,7 @@ def fuzzy_semantic_filter(results, intent):
         # 日期命中模式
         return [r for r in results if any(t in (r['text'] + (r['date'] or '') + r['full_row']).replace(' ', '') for t in targets)]
 
-    # 无日期模式：使用 intent 中的关键词进行语义匹配
+    # 无日期模式:使用 intent 中的关键词进行语义匹配
     query_parts = intent['query'].split()
     return [r for r in results if any(q in (r['text'] + r['full_row']) for q in query_parts)]
 
@@ -520,20 +612,20 @@ async def final_download(page, results):
                     clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_attach = re.sub(r'[\\/:*?"<>|]', '_', attachment_name)
 
-                    # v2.6.1 精准判定逻辑：
-                    # 1. 独立正文：含有指导原则/征求意见稿，但排除辅助性关键词
+                    # v2.6.1 精准判定逻辑:
+                    # 1. 独立正文:含有指导原则/征求意见稿,但排除辅助性关键词
                     is_main_doc = any(k in clean_attach for k in ['指导原则', '征求意见稿', '试行', '正式']) \
                                   and not any(k in clean_attach for k in ['起草说明', '反馈表', '修订说明', '附件', '说明'])
 
-                    # 2. 判定标题是否已经"你中有我"（针对那种附件名就是通告全名的情况）
+                    # 2. 判定标题是否已经"你中有我"(针对那种附件名就是通告全名的情况)
                     core_title = re.sub(r'^关于公开征求《?|》?等.*$', '', clean_title)
                     is_already_contained = core_title[:10] in clean_attach or clean_attach[:10] in core_title
 
                     if is_main_doc or is_already_contained:
-                        # 正文文件，或附件名已包含主旨 -> 直接用附件名
+                        # 正文文件,或附件名已包含主旨 -> 直接用附件名
                         fname = f"{publish_date} - {clean_attach}"
                     else:
-                        # 辅助文件（如起草说明、反馈表） -> 必须挂载主标题前缀
+                        # 辅助文件(如起草说明、反馈表) -> 必须挂载主标题前缀
                         fname = f"{publish_date} - {clean_title} - {clean_attach}"
                     if not fname.lower().endswith(('.pdf', '.docx', '.doc', '.xlsx', '.xls')): fname += ".pdf"
                     fpath = os.path.join(save_dir, fname)
@@ -555,14 +647,19 @@ async def main_flow(keyword):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
         page = await browser.new_page()
+        # v2.8.1: 注入反检测脚本,防止CDE等网站因 navigator.webdriver 检测而拒绝渲染
+        await page.add_init_script('''() => {
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            delete navigator.__proto__.webdriver;
+        }''')
 
-        # 升级：优先用主体词匹配 override
+        # 升级:优先用主体词匹配 override
         entry = match_override(keyword, primary=intent.get('primary'))
 
         if entry:
             log(f"🧠 经验命中: {entry.get('note', '')} (匹配依据: {entry.get('_matched_on', '')})")
 
-            # 根据 method 决定执行方式，不再双轨并行
+            # 根据 method 决定执行方式,不再双轨并行
             method = entry.get('method', 'both')
             list_urls = entry.get('list_urls', [])
             search_url = entry.get('search_url')
@@ -570,17 +667,17 @@ async def main_flow(keyword):
             translatable = entry.get('translatable', False)
 
             # v2.7.5: pts 改为 dict{name: {"url": str, "sv": str|None}}
-            # sv=None 表示不填搜索框（由 smart_interact 的 date+primary 逻辑决定填什么）
+            # sv=None 表示不填搜索框(由 smart_interact 的 date+primary 逻辑决定填什么)
             # sv=str 表示用该字符串填搜索框
             pts = {}
             if list_urls:
                 for idx, url in enumerate(list_urls):
-                    # 列表页：用 intent['primary'] 填标题（sv=None 时 smart_interact 会走 date+primary 分支）
+                    # 列表页:用 intent['primary'] 填标题(sv=None 时 smart_interact 会走 date+primary 分支)
                     pts[f"列表{idx+1}"] = {"url": url, "sv": None}
             if search_url:
                 pts["搜索页"] = {"url": search_url, "sv": search_var}
         else:
-            # 无经验时：默认双轨并行
+            # 无经验时:默认双轨并行
             method = 'both'
             primary = intent.get('primary', keyword)
             target_url = CDE_ENTRY_PAGES.get(primary)
@@ -589,26 +686,26 @@ async def main_flow(keyword):
             search_var = None
             translatable = False
 
-        log(f"📌 执行方式: {method} {'(仅使用经验指定方式，不再双轨并行)' if entry and method != 'both' else '(默认双轨并行)'}")
+        log(f"📌 执行方式: {method} {'(仅使用经验指定方式,不再双轨并行)' if entry and method != 'both' else '(默认双轨并行)'}")
         log(f"    🔍 search_var = {repr(search_var)}, translatable = {translatable}")
 
         raw_list = await explore_with_pagination_v2(page, intent, pts, translatable=translatable)
         final_list = fuzzy_semantic_filter(raw_list, intent)
 
-        # 如果有限定词，进一步过滤结果
+        # 如果有限定词,进一步过滤结果
         qualifiers = intent.get('qualifiers', [])
         if qualifiers and final_list:
             before = len(final_list)
             final_list = [r for r in final_list if any(
                 q in (r['text'] + r['full_row']) for q in qualifiers
             )]
-            log(f"🔍 限定词过滤 '{qualifiers}'：{before} → {len(final_list)} 条")
+            log(f"🔍 限定词过滤 '{qualifiers}':{before} → {len(final_list)} 条")
 
         if not final_list: log("❌ 未发现匹配项。")
         else:
-            log(f"📋 发现 {len(final_list)} 条通告，提取全量附件...")
+            log(f"📋 发现 {len(final_list)} 条通告,提取全量附件...")
             downloaded = await final_download(page, final_list)
-            log(f"🎉 任务完成：共下载 {downloaded} 个关联文件。")
+            log(f"🎉 任务完成:共下载 {downloaded} 个关联文件。")
         await browser.close()
 
 if __name__ == "__main__":
