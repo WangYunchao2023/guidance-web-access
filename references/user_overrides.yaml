@@ -10,8 +10,36 @@ overrides:
     search_url: "https://www.cde.org.cn/zdyz/fullsearchpage"
     search_field: "title"  # 基于标题搜索
 
-  - task_pattern: "指导原则"
+  # ============================================================
+  # 【人工经验 2026-03-24】按日期查找指导原则
+  # 触发条件：任务包含"XX日期发布的指导原则"或"指导原则 XX日期"
+  # 示例：3月9日发布的指导原则、指导原则 2025年3月9日
+  # ============================================================
+  - task_pattern: "(.{0,10}日|\\d{1,2}月\\d{0,2}日?).*(?:发布|的).*指导原则"
     method: both
-    target_url: "https://www.cde.org.cn/zdyz/listpage/2853510d929253719601db17b8a9fd81"
+    note: "【人工经验】按日期查找指导原则：三轨并行——发布通告列表 + 征求意见列表 + 搜索页日期范围检索"
+    # 发布通告列表（正式发布的指导原则）
+    list_urls:
+      - "https://www.cde.org.cn/zdyz/listpage/2853510d929253719601db17b8a9fd81"
+      - "https://www.cde.org.cn/zdyz/listpage/3c49fad55caad7a034c263cfc2b6eb9c"
+    # 专栏内搜索页（日期范围检索，效率更高）
     search_url: "https://www.cde.org.cn/zdyz/fullsearchpage"
-    note: "指导原则专栏 - 列表与搜索直达"
+    # URL失效后备：从指导原则专栏首页(https://www.cde.org.cn/zdyz/index)，
+    # 依次点击「发布通告 → 查看更多」和「征求意见 → 查看更多」获取最新列表URL
+    fallback_navigation:
+      - step: "从指导原则专栏首页 https://www.cde.org.cn/zdyz/index 开始"
+        action: "找到左侧"发布通告"行，点击同一行的"更多">"
+        next_step: "在发布通告列表页按发布日期筛选目标日期"
+      - step: "发布通告列表"
+        action: "找到左侧"征求意见"行，点击同一行的"更多">"
+        next_step: "在征求意见列表页按发布日期筛选目标日期"
+    date_filter: true
+    # 列表页 CSS 选择器（人工确认）
+    list_selectors:
+      - ".news_item"          # 当前CDE列表页内容行
+      - ".news_date"          # 日期区域（含年.月.日）
+      - ".news_content_title" # 标题区域
+    search_note: |
+      重要：搜索页日期字段(issueDate1/issueDate2)是layui readonly组件，
+      JS赋值需额外触发laydate事件才可生效，优先使用列表页的日期分页/筛选功能。
+      列表页结构：.news_item > .news_date(年.月.日) + .news_content_title(标题)

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.7.5] - 2026-03-24
+
+### Changed
+- **翻译由 AI 助手直接提供**：移除脚本内的 LLM API 调用和静态词表，改为输出 `[TRANSLATION_REQUESTED]` 标记
+- 当 `translatable=True` 且结果不足时，脚本打印翻译请求标记并等待 AI 助手在会话中直接回复翻译结果
+- AI 助手根据任务上下文（药品名、术语、目标网站）动态生成 2-4 个英文搜索候选词
+
+---
+
+## [2.7.4] - 2026-03-24
+
+### Added
+- **翻译变体功能 (`generate_translation_variants`)**：当 override 经验配置 `translatable: true` 时，对中文搜索词生成英文翻译候选变体
+- **翻译+截短联合策略**：每个翻译变体内部再执行截短降级，形成"翻译候选 × 截短程度"二维搜索矩阵
+
+### Changed
+- `explore_with_pagination` 新增 `translatable` 参数，默认 `False`（不改动现有行为）
+- 降级顺序：翻译变体（优先）→ 截短策略（兜底），互不干扰
+
+---
+
+## [2.7.3] - 2026-03-24
+
+### Added
+- **支持 `list_urls` 字段（数组）**：`user_overrides.yaml` 可配置多个列表页 URL，脚本并行探索多列表
+- **Fallback 导航机制**：当 `list_urls` 中的 URL 打不开或内容不对时，按 `fallback_navigation` 描述的路径从专栏首页逐步导航
+- **`.news_item` 日期提取**：新增对 CDE 专栏 `.news_item` 结构的日期解析（年.月 和 日 分开在 span 中）
+
+### Fixed
+- **列表选择器修复**：CSS 选择器追加 `.news_item`，解决 CDE 列表页扫描返回 0 条的问题
+- **layui readonly 日期填充**：改用 JS `Object.getOwnPropertyDescriptor` + `laydate.render()` 触发，解决搜索页日期无法填入的问题
+- **标题搜索框不再填入日期**：有日期任务时，搜索页标题框只填主体词（如"指导原则"），日期填入专用日期字段，避免"3月9日"被当成标题内容搜索
+
+### Changed
+- **按日期查找指导原则经验**：`method: both`，命中后**三轨并行**——发布通告列表 + 征求意见列表 + 搜索页日期范围检索
+
+---
+
 ## [2.7.2] - 2026-03-24
 
 ### Changed
