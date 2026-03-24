@@ -92,6 +92,35 @@ def extract_var_from_match(pattern, keyword):
         pass
     return None
 
+def generate_truncated_variants(keyword):
+    """生成关键词截短变体，从长到短逐步简化，用于结果少时降级搜索"""
+    if not keyword or len(keyword) <= 1:
+        return [keyword] if keyword else []
+    variants = []
+    # 原始词
+    variants.append(keyword)
+    # 去掉常见结尾修饰词（按优先级从低到高排列，先去掉的放后面）
+    suffixes_to_try = [
+        (r'(?:相关|指南|指导原则|技术指导原则|技术|工艺|方法|研究|评价|申报|注册|生产|制备|质量|控制|标准|规范).*$', ''),
+        (r'(?:产品|制剂|药品|药物).*$', ''),
+        (r'(?:生物|细胞|基因|蛋白|抗体|疫苗|化药|中药|天然产物).*$', ''),
+        (r'(?:临床|非临床|药学|药理|毒理|临床前).*$', ''),
+    ]
+    for pattern, repl in suffixes_to_try:
+        truncated = re.sub(pattern, '', keyword)
+        if truncated and truncated != keyword and truncated not in variants:
+            variants.append(truncated)
+    # 逐步缩短：每次去掉尾部1个字符（直到只剩2字）
+    for i in range(len(keyword) - 1, 1, -1):
+        v = keyword[:i]
+        if v not in variants:
+            variants.append(v)
+    # 去重，保持顺序
+    seen = set(); unique = []
+    for v in variants:
+        if v not in seen: seen.add(v); unique.append(v)
+    return unique
+
 def match_override(keyword, primary=None):
     """升级版 override 匹配：支持变量提取 + 方法明确性"""
     match_key = primary if primary else keyword
@@ -244,19 +273,35 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
             for l in page_links:
                 if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
             
-            # 如果结果少，降级重试
+            # 如果结果少，降级重试（截短策略）
             if len(all_results) < 5:
                 if search_var:
-                    log(f"    💡 结果较少({len(all_results)}条)，尝试仅用关键词'{search_var}'重搜...")
+                    # 先尝试完整关键词
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, search_var=search_var)
                     await asyncio.sleep(3)
                     page_links = await get_links_with_full_context(page)
-                    log(f"    📋 降级扫描: 找到 {len(page_links)} 条记录")
-                    for debug_l in page_links[:3]:
-                        log(f"       - {debug_l['text'][:50]} | date={debug_l.get('date')}")
+                    log(f"    📋 关键词'{search_var}'扫描: 找到 {len(page_links)} 条")
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+                    # 如果仍少，启用截短策略
+                    if len(all_results) < 5:
+                        variants = generate_truncated_variants(search_var)
+                        log(f"    💡 结果仍少({len(all_results)}条)，启动截短策略: {variants}")
+                        for var in variants[1:]:  # 跳过第一个（就是完整关键词，已试过）
+                            if var == search_var:
+                                continue
+                            log(f"    🔄 截短重试: '{var}'")
+                            await page.goto(url); await asyncio.sleep(5)
+                            await smart_interact(page, intent, search_var=var)
+                            await asyncio.sleep(3)
+                            page_links = await get_links_with_full_context(page)
+                            log(f"    📋 截短'{var}'扫描: 找到 {len(page_links)} 条")
+                            for l in page_links:
+                                if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+                            if len(all_results) >= 5:
+                                log(f"    ✅ 截短成功，获得足够结果")
+                                break
                 elif intent.get('date'):
                     log(f"    💡 结果较少({len(all_results)}条)，尝试仅用日期重搜...")
                     await page.goto(url); await asyncio.sleep(5)
