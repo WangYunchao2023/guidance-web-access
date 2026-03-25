@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 2.9.1 (2026-03-25)
-核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.1 整行提取策略修复）
+版本: 3.0.0 (2026-03-25)
+核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
 """
@@ -312,20 +312,24 @@ async def get_links_by_text_content_v2(page, search_keyword=None):
     }''', search_keyword)
 
 # ================================================================
-# v2.9.1: 改进版内容提取函数 - 不依赖上述evaluate,单独实现
+# v3.0.0: 全扫描+关键词匹配 - 最通用方案
 # ================================================================
 async def get_links_by_text_content_v2(page, search_keyword=None):
     """
-    v2.9.1: 改进版内容提取器 - 基于"整行提取"策略。
+    v3.0.0: 全扫描+关键词匹配 - 最通用方案
     
-    核心改进:不再依赖TreeWalker的"文本→向上→找链接"逻辑,
-    而是采用"行级提取":
-    1. 识别页面中的列表/表格结构行(tr/li/div.news_item等)
-    2. 每行同时提取"完整文本"和"所有链接"
-    3. 检查该行文本是否包含关键词
-    4. 如果包含,提取该行的所有链接
+    原理:遍历页面所有链接,获取每个链接周围一定范围的文本,
+    检查是否包含关键词,有则提取。
     
-    这样解决了:CDE搜索结果页中,关键词文本和下载链接在同一行但不同单元格的问题。
+    适用场景:
+    - 表格结构(关键词在TD-A,链接在TD-B)
+    - 列表结构(关键词在LI内任何位置)
+    - 块级结构(关键词和链接在同一div)
+    - 瀑布流/网格(关键词在块内任意位置)
+    - 单链接块(关键词紧邻链接)
+    - 任何DOM结构
+    
+    优势:不依赖DOM层级关系,不依赖结构假设,只关心"链接"和"关键词是否在同区域"。
     """
     return await page.evaluate(r'''
         (searchKeyword) => {
@@ -333,114 +337,77 @@ async def get_links_by_text_content_v2(page, search_keyword=None):
         const kwLower = keyword.toLowerCase();
         
         // =============================================
-        // 步骤1: 收集页面中所有行级元素
+        // 步骤1: 收集所有链接及其上下文
         // =============================================
-        const rows = [];
+        const allLinks = Array.from(document.querySelectorAll('a[href]'));
         
-        // 方案A:表格行(tr)
-        document.querySelectorAll('table tbody tr, table tr').forEach(tr => {
-            if (tr.querySelector('a')) {
-                rows.push(tr);
-            }
-        });
-        
-        // 方案B:列表项(li)
-        document.querySelectorAll('ul li, ol li').forEach(li => {
-            if (li.querySelector('a') && li.innerText.trim().length > 5) {
-                rows.push(li);
-            }
-        });
-        
-        // 方案C:CDE专用结构 .news_item
-        document.querySelectorAll('.news_item').forEach(item => {
-            rows.push(item);
-        });
-        
-        // 方案D:div块(带链接的div)
-        document.querySelectorAll('div.list_item, div.result_item, div.item, article.item').forEach(div => {
-            if (div.querySelector('a') && div.innerText.trim().length > 10) {
-                rows.push(div);
-            }
-        });
-        
-        // 方案E:兜底 - 所有包含链接的块级元素
-        if (rows.length === 0) {
-            document.querySelectorAll('a').forEach(link => {
-                let container = link.parentElement;
-                let depth = 0;
-                while (container && depth < 8) {
-                    if (['DIV', 'LI', 'TR', 'TD', 'SECTION', 'ARTICLE'].includes(container.tagName)) {
-                        if (container !== document.body && !rows.includes(container)) {
-                            rows.push(container);
-                        }
-                        break;
-                    }
-                    container = container.parentElement;
-                    depth++;
-                }
-            });
-        }
-        
-        // 去重
-        const uniqueRows = [...new Set(rows)];
-        
-        if (uniqueRows.length === 0) {
+        if (allLinks.length === 0) {
             return [];
         }
         
-        // =============================================
-        // 步骤2: 逐行提取文本和链接
-        // =============================================
         const results = [];
         const seenHrefs = new Set();
         
-        for (const row of uniqueRows) {
-            const fullText = (row.innerText || '').replace(/\s+/g, ' ').trim();
+        for (const link of allLinks) {
+            const href = link.href;
             
-            // 提取日期
+            // 过滤无效链接
+            if (!href || !href.startsWith('http') || href.includes('javascript')) continue;
+            if (seenHrefs.has(href)) continue;
+            
+            const linkText = (link.innerText || '').trim();
+            if (linkText.length < 2) continue;
+            
+            // =============================================
+            // 步骤2: 获取链接的上下文文本
+            // 向上遍历最多8层,收集周围所有文本
+            // =============================================
+            let context = '';
+            let container = link.parentElement;
+            for (let depth = 0; depth < 8; depth++) {
+                if (!container || container === document.body) break;
+                context += ' ' + (container.innerText || '');
+                container = container.parentElement;
+            }
+            
+            const fullText = context.replace(/\s+/g, ' ').trim();
+            
+            // 提取日期(从链接文本或周围文本)
             let date = null;
-            const dateM = fullText.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
+            const textForDate = linkText + ' ' + fullText;
+            const dateM = textForDate.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
             if (dateM) {
                 date = dateM[1] + '.' + dateM[2].padStart(2,'0') + '.' + dateM[3].padStart(2,'0');
             }
             
-            // 检查该行是否包含关键词(如果没有关键词则全部提取)
-            if (kwLower && !fullText.toLowerCase().includes(kwLower)) {
+            // =============================================
+            // 步骤3: 关键词过滤
+            // - 有关键词时:链接周围文本包含关键词
+            // - 无关键词时:提取所有链接
+            // =============================================
+            if (kwLower && !fullText.toLowerCase().includes(kwLower) && !linkText.toLowerCase().includes(kwLower)) {
                 continue;
             }
             
-            // 提取该行内所有链接
-            const links = row.querySelectorAll('a[href]');
-            for (const link of links) {
-                const href = link.href;
-                const linkText = (link.innerText || '').trim();
-                
-                // 过滤无效链接
-                if (!href || !href.startsWith('http') || href.includes('javascript')) continue;
-                if (linkText.length < 2) continue;
-                
-                // 跳过相同href
-                if (seenHrefs.has(href)) continue;
-                seenHrefs.add(href);
-                
-                results.push({
-                    href: href,
-                    text: linkText,
-                    full_row: fullText,
-                    date: date
-                });
-            }
+            seenHrefs.add(href);
+            
+            results.push({
+                href: href,
+                text: linkText,
+                full_row: fullText,
+                date: date
+            });
         }
         
         // =============================================
-        // 步骤3: 内容质量过滤
+        // 步骤4: 内容质量过滤
         // =============================================
-        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多', '更多>', '网站地图', '联系我们'];
-        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见', '规范', '准则', '要求', '技术', '指引', '原则', '关于'];
+        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多>', '网站地图', '联系我们', '京公网安备'];
+        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见', '规范', '准则', '要求', '技术', '指引', '原则', '关于', '征求意见'];
         
         const filtered = results.filter(r => {
             const row = (r.full_row || '') + (r.text || '');
-            // 噪音过滤
+            // 噪音过滤(有噪音词但没有内容词)
             if (noiseIndicators.some(n => row.includes(n)) && !contentIndicators.some(c => row.includes(c))) {
                 return false;
             }
