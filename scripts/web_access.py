@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.0.0 (2026-03-25)
+版本: 3.0.2 (2026-03-25)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -743,8 +743,41 @@ def fuzzy_semantic_filter(results, intent):
 
 # ==================== 📥 全要素下载逻辑 ====================
 
-async def final_download(page, results):
-    save_dir = os.path.expanduser("~/Documents/工作/法规指导原则"); os.makedirs(save_dir, exist_ok=True)
+async def final_download(page, results, keyword=""):
+    # v3.0.2: 智能子目录判断
+    base_dir = os.path.expanduser("~/Documents/工作/法规指导原则")
+    kw = keyword.lower()
+    # 根据关键词判断子目录
+    if any(k in kw for k in ['沟通交流']):
+        sub_dir = "沟通交流"
+    elif any(k in kw for k in ['化药', '化学药品']) and any(k in kw for k in ['稳定性']):
+        sub_dir = "化药稳定性"
+    elif any(k in kw for k in ['化药', '化学药品']):
+        sub_dir = "化药"
+    elif any(k in kw for k in ['生物制品', '生物药']):
+        sub_dir = "生物制品"
+    elif any(k in kw for k in ['中药', '中医药']):
+        sub_dir = "中药"
+    elif any(k in kw for k in ['疫苗']):
+        sub_dir = "疫苗"
+    elif any(k in kw for k in ['一致性评价', '仿制药']):
+        sub_dir = "一致性评价"
+    elif any(k in kw for k in ['细胞治疗', '基因治疗', 'CAR-T']):
+        sub_dir = "细胞基因治疗"
+    elif any(k in kw for k in ['罕见病', '孤儿药']):
+        sub_dir = "罕见病"
+    elif any(k in kw for k in ['儿童用药', '儿科']):
+        sub_dir = "儿童用药"
+    elif any(k in kw for k in ['抗肿瘤', '肿瘤', '癌症']):
+        sub_dir = "抗肿瘤"
+    elif any(k in kw for k in ['抗新冠', '新冠', 'COVID']):
+        sub_dir = "抗新冠"
+    else:
+        sub_dir = "其他"
+    
+    save_dir = os.path.join(base_dir, sub_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    log(f"📁 智能保存目录: {save_dir}")
     total_count = 0
     for r in results:
         log(f"🔍 详情页提取: {r['text'][:40]}...")
@@ -871,7 +904,7 @@ async def main_flow(keyword, extra_filter=None):
         if not final_list: log("❌ 未发现匹配项。")
         else:
             log(f"📋 发现 {len(final_list)} 条通告,提取全量附件...")
-            downloaded = await final_download(page, final_list)
+            downloaded = await final_download(page, final_list, keyword)
             log(f"🎉 任务完成:共下载 {downloaded} 个关联文件。")
         await browser.close()
 
