@@ -744,7 +744,7 @@ def fuzzy_semantic_filter(results, intent):
 # ==================== 📥 全要素下载逻辑 ====================
 
 async def final_download(page, results):
-    save_dir = os.path.expanduser("~/Documents/工作/化药稳定性"); os.makedirs(save_dir, exist_ok=True)
+    save_dir = os.path.expanduser("~/Documents/工作/法规指导原则"); os.makedirs(save_dir, exist_ok=True)
     total_count = 0
     for r in results:
         log(f"🔍 详情页提取: {r['text'][:40]}...")
