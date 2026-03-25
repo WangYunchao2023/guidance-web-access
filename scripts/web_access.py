@@ -402,16 +402,38 @@ async def get_links_by_text_content_v2(page, search_keyword=None):
         // =============================================
         // 步骤4: 内容质量过滤
         // =============================================
-        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多>', '网站地图', '联系我们', '京公网安备'];
-        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见', '规范', '准则', '要求', '技术', '指引', '原则', '关于', '征求意见'];
+        // 噪音链接:导航/页脚/版权等非内容链接
+        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多>', '网站地图', '联系我们', '京公网安备', '首页', '指导原则专栏', '指导原则数据库', '发布通告', '征求意见', 'ICH指导原则', '国外参考', '机构职能', 'CDE邮箱'];
+        
+        // 内容词:确认是有效内容链接的标志
+        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见稿', '规范', '准则', '要求', '技术', '指引', '原则', '关于', '征求意见', '管理程序', '研发', '注册', '申报', '药学', '临床', '试验', '评价', '复方', '创新药'];
         
         const filtered = results.filter(r => {
             const row = (r.full_row || '') + (r.text || '');
-            // 噪音过滤(有噪音词但没有内容词)
+            const rowLower = row.toLowerCase();
+            
+            // 规则1: 强噪音词直接过滤(即使有内容词)
+            const strongNoise = ['网站地图', '联系我们', '京公网安备', '京ICP备', 'CDE邮箱', '机构职能', '首页'];
+            if (strongNoise.some(n => row.includes(n))) {
+                return false;
+            }
+            
+            // 规则2: 有噪音词但没有任何内容词,过滤
             if (noiseIndicators.some(n => row.includes(n)) && !contentIndicators.some(c => row.includes(c))) {
                 return false;
             }
-            return row.length >= 8;
+            
+            // 规则3: 内容词必须达到一定长度(排除纯标题链接)
+            if (contentIndicators.some(c => row.includes(c)) && row.length < 10) {
+                return false;
+            }
+            
+            // 规则4: 文本太短且无内容词,过滤
+            if (!contentIndicators.some(c => row.includes(c)) && row.length < 20) {
+                return false;
+            }
+            
+            return true;
         });
         
         return filtered;
