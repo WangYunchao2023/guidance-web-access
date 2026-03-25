@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 2.9.0 (2026-03-24)
+版本: 2.9.1 (2026-03-25)
+核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.1 整行提取策略修复）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
 """
@@ -156,14 +157,15 @@ def match_override(keyword, primary=None):
 
 # ==================== 🧠 智能化感知与提取 ====================
 
-async def get_links_by_text_content(page, search_keyword=None):
+async def get_links_by_text_content_v2(page, search_keyword=None):
     """
-    v2.8.1: 通用内容提取器 - 基于TreeWalker直接遍历+关键词上下文定位。
-
-    原理:用TreeWalker直接遍历所有文本节点,找到包含关键词的节点,
-    然后向上找到最近的包含链接的容器元素,提取完整条目。
-
-    完全不依赖CSS选择器、结构假设、或段落切分。
+    v2.9.1: 改进版内容提取器 - 基于"整行提取"策略，适用于表格/列表结构。
+    
+    原理:不再依赖"文本节点→向上找链接"的树遍历方式,
+    而是先识别页面中的列表/表格结构(行级元素),
+    再在每行内同时查找文本和链接,确保关键词与链接在同一条目时能正确提取。
+    
+    适用于CDE等网站的结果页,关键词文本和下载链接可能在同一行的不同单元格中。
     """
     return await page.evaluate(r'''
         (searchKeyword) => {
@@ -309,6 +311,145 @@ async def get_links_by_text_content(page, search_keyword=None):
         return filtered;
     }''', search_keyword)
 
+# ================================================================
+# v2.9.1: 改进版内容提取函数 - 不依赖上述evaluate,单独实现
+# ================================================================
+async def get_links_by_text_content_v2(page, search_keyword=None):
+    """
+    v2.9.1: 改进版内容提取器 - 基于"整行提取"策略。
+    
+    核心改进:不再依赖TreeWalker的"文本→向上→找链接"逻辑,
+    而是采用"行级提取":
+    1. 识别页面中的列表/表格结构行(tr/li/div.news_item等)
+    2. 每行同时提取"完整文本"和"所有链接"
+    3. 检查该行文本是否包含关键词
+    4. 如果包含,提取该行的所有链接
+    
+    这样解决了:CDE搜索结果页中,关键词文本和下载链接在同一行但不同单元格的问题。
+    """
+    return await page.evaluate(r'''
+        (searchKeyword) => {
+        const keyword = searchKeyword || '';
+        const kwLower = keyword.toLowerCase();
+        
+        // =============================================
+        // 步骤1: 收集页面中所有行级元素
+        // =============================================
+        const rows = [];
+        
+        // 方案A:表格行(tr)
+        document.querySelectorAll('table tbody tr, table tr').forEach(tr => {
+            if (tr.querySelector('a')) {
+                rows.push(tr);
+            }
+        });
+        
+        // 方案B:列表项(li)
+        document.querySelectorAll('ul li, ol li').forEach(li => {
+            if (li.querySelector('a') && li.innerText.trim().length > 5) {
+                rows.push(li);
+            }
+        });
+        
+        // 方案C:CDE专用结构 .news_item
+        document.querySelectorAll('.news_item').forEach(item => {
+            rows.push(item);
+        });
+        
+        // 方案D:div块(带链接的div)
+        document.querySelectorAll('div.list_item, div.result_item, div.item, article.item').forEach(div => {
+            if (div.querySelector('a') && div.innerText.trim().length > 10) {
+                rows.push(div);
+            }
+        });
+        
+        // 方案E:兜底 - 所有包含链接的块级元素
+        if (rows.length === 0) {
+            document.querySelectorAll('a').forEach(link => {
+                let container = link.parentElement;
+                let depth = 0;
+                while (container && depth < 8) {
+                    if (['DIV', 'LI', 'TR', 'TD', 'SECTION', 'ARTICLE'].includes(container.tagName)) {
+                        if (container !== document.body && !rows.includes(container)) {
+                            rows.push(container);
+                        }
+                        break;
+                    }
+                    container = container.parentElement;
+                    depth++;
+                }
+            });
+        }
+        
+        // 去重
+        const uniqueRows = [...new Set(rows)];
+        
+        if (uniqueRows.length === 0) {
+            return [];
+        }
+        
+        // =============================================
+        // 步骤2: 逐行提取文本和链接
+        // =============================================
+        const results = [];
+        const seenHrefs = new Set();
+        
+        for (const row of uniqueRows) {
+            const fullText = (row.innerText || '').replace(/\s+/g, ' ').trim();
+            
+            // 提取日期
+            let date = null;
+            const dateM = fullText.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
+            if (dateM) {
+                date = dateM[1] + '.' + dateM[2].padStart(2,'0') + '.' + dateM[3].padStart(2,'0');
+            }
+            
+            // 检查该行是否包含关键词(如果没有关键词则全部提取)
+            if (kwLower && !fullText.toLowerCase().includes(kwLower)) {
+                continue;
+            }
+            
+            // 提取该行内所有链接
+            const links = row.querySelectorAll('a[href]');
+            for (const link of links) {
+                const href = link.href;
+                const linkText = (link.innerText || '').trim();
+                
+                // 过滤无效链接
+                if (!href || !href.startsWith('http') || href.includes('javascript')) continue;
+                if (linkText.length < 2) continue;
+                
+                // 跳过相同href
+                if (seenHrefs.has(href)) continue;
+                seenHrefs.add(href);
+                
+                results.push({
+                    href: href,
+                    text: linkText,
+                    full_row: fullText,
+                    date: date
+                });
+            }
+        }
+        
+        // =============================================
+        // 步骤3: 内容质量过滤
+        // =============================================
+        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多', '更多>', '网站地图', '联系我们'];
+        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见', '规范', '准则', '要求', '技术', '指引', '原则', '关于'];
+        
+        const filtered = results.filter(r => {
+            const row = (r.full_row || '') + (r.text || '');
+            // 噪音过滤
+            if (noiseIndicators.some(n => row.includes(n)) && !contentIndicators.some(c => row.includes(c))) {
+                return false;
+            }
+            return row.length >= 8;
+        });
+        
+        return filtered;
+    }''', search_keyword)
+
 async def smart_interact(page, intent, try_date_only=False, search_var=None, search_field=None):
     """search_var: 传入提取的变量作为搜索词;search_field: 搜索字段类型(title/content/date)"""
     try:
@@ -413,7 +554,7 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
             await asyncio.sleep(5)
 
             # 首次扫描(基于搜索结果)
-            page_links = await get_links_by_text_content(page, search_var)
+            page_links = await get_links_by_text_content_v2(page, search_var)
             # 调试:打印页面中所有链接文本
             try:
                 all_text = await page.evaluate(r'''() => {
@@ -445,7 +586,7 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, search_var=search_var)
                     await asyncio.sleep(3)
-                    page_links = await get_links_by_text_content(page, search_var)
+                    page_links = await get_links_by_text_content_v2(page, search_var)
                     log(f"    📋 关键词'{search_var}'扫描: 找到 {len(page_links)} 条")
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
@@ -460,7 +601,7 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
                             await page.goto(url); await asyncio.sleep(5)
                             await smart_interact(page, intent, search_var=var)
                             await asyncio.sleep(3)
-                            page_links = await get_links_by_text_content(page, search_var)
+                            page_links = await get_links_by_text_content_v2(page, search_var)
                             log(f"    📋 截短'{var}'扫描: 找到 {len(page_links)} 条")
                             for l in page_links:
                                 if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
@@ -472,7 +613,7 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, try_date_only=True)
                     await asyncio.sleep(3)
-                    page_links = await get_links_by_text_content(page, search_var)
+                    page_links = await get_links_by_text_content_v2(page, search_var)
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
 
@@ -481,7 +622,7 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
                 next_btn = await page.query_selector('text="下一页"') or await page.query_selector('a:has-text(">")')
                 if next_btn and p_idx < 6:
                     await next_btn.click(); await asyncio.sleep(5)
-                    page_links = await get_links_by_text_content(page, search_var)
+                    page_links = await get_links_by_text_content_v2(page, search_var)
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
                 else: break
@@ -518,7 +659,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
             await smart_interact(page, intent, search_var=sv)
             await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
 
-            page_links = await get_links_by_text_content(page, sv)
+            page_links = await get_links_by_text_content_v2(page, sv)
             log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
             # 调试:打印前5条的日期
             for dl in page_links[:5]:
@@ -555,7 +696,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                             await smart_interact(page, intent, search_var=var)
                             await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
 
-                            page_links = await get_links_by_text_content(page, var)
+                            page_links = await get_links_by_text_content_v2(page, var)
                             log(f"    📋 '{var}'扫描: {len(page_links)} 条")
                             for l in page_links:
                                 if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
@@ -566,7 +707,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                     await page.goto(url); await asyncio.sleep(5)
                     await smart_interact(page, intent, try_date_only=True)
                     await asyncio.sleep(3)
-                    page_links = await get_links_by_text_content(page, None)
+                    page_links = await get_links_by_text_content_v2(page, None)
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
 
@@ -578,7 +719,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                     txt = (await next_btn.inner_text()).strip()
                     if 'layui-disabled' not in cls and txt:
                         await next_btn.click(); await asyncio.sleep(5)
-                        page_links = await get_links_by_text_content(page, None)
+                        page_links = await get_links_by_text_content_v2(page, None)
                         for l in page_links:
                             if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
                     else:
