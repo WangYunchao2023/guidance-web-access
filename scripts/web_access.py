@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.3.0 (2026-03-26)
+版本: 3.3.1 (2026-03-26)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -1001,23 +1001,25 @@ async def cortana_execute_flow(cortana_plan):
         log(f"📌 搜索词: {repr(search_var)}")
         log(f"📌 过滤条件: {filter_criteria}")
         
-        # 构建 intent（用于 fuzzy_semantic_filter）
-        intent = {
-            'query': task,
+        # Cortana 主导模式下，使用更宽松的过滤逻辑
+        # 不使用 fuzzy_semantic_filter（它会用 intent['query'] 过滤，导致误杀）
+        # 直接使用探索结果，只用 filter_criteria 过滤
+        
+        # 构建 intent（用于 explore_with_pagination_v2 内部）
+        intent_for_explore = {
+            'query': search_var or task,
             'original': task,
             'primary': search_var or task,
             'qualifiers': filter_criteria,
             'date': None,
-            'extra_filter': extra_filter
+            'extra_filter': None  # Cortana模式不使用这个
         }
         
         # 执行探索
-        raw_list = await explore_with_pagination_v2(page, intent, pts, translatable=False)
+        raw_list = await explore_with_pagination_v2(page, intent_for_explore, pts, translatable=False)
         
-        # 过滤
-        final_list = fuzzy_semantic_filter(raw_list, intent)
-        
-        # 额外过滤条件
+        # Cortana 模式下，只用 filter_criteria 过滤
+        final_list = raw_list
         if filter_criteria and final_list:
             before = len(final_list)
             final_list = [r for r in final_list if any(
