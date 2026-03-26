@@ -12,7 +12,7 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 # ==================== 配置 ====================
-CONFIG = { 'headless': True, 'timeout': 60000 }
+CONFIG = { 'headless': False, 'timeout': 60000 }
 BROWSER_ARGS = ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage']
 UA_POOL = ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36']
 CDE_ENTRY_PAGES = {
@@ -862,7 +862,7 @@ async def main_flow(keyword, extra_filter=None, save_dir=None):
     intent = extract_task_intent(keyword)
     log(f"🎯 任务: {intent['query']} | 主体: {intent['primary']} | 限定: {intent.get('qualifiers', [])}")
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=CONFIG['headless'], args=BROWSER_ARGS)
+        browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
         page = await browser.new_page()
         # v2.8.1: 注入反检测脚本,防止CDE等网站因 navigator.webdriver 检测而拒绝渲染
         await page.add_init_script('''() => {
