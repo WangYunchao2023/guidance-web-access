@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.0.2 (2026-03-25)
+版本: 3.0.3 (2026-03-26)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -539,8 +539,29 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
             # 策略 1:正常搜(search_var 优先,如"沟通交流")
             filled = await smart_interact(page, intent, search_var=search_var)
 
-            # 等待搜索结果加载
-            await asyncio.sleep(5)
+            # =============================================
+            # 稳定性检测：等待内容加载完成
+            # 原理：连续2次检测到相同数量的内容项，认为加载完成
+            # =============================================
+            log(f"    ⏳ 等待内容加载稳定...")
+            prev_count = 0
+            stable_count = 0
+            for _wait in range(15):  # 最多等15秒
+                try:
+                    count = await page.evaluate('document.querySelectorAll("a").length')
+                    if count > 10 and count == prev_count:
+                        stable_count += 1
+                        if stable_count >= 2:  # 连续2次稳定
+                            log(f"    ✅ 内容已稳定加载（{_wait}秒），检测到 {count} 个链接")
+                            break
+                    else:
+                        stable_count = 0
+                    prev_count = count
+                except Exception as e:
+                    log(f"    ⚠️ 稳定性检测异常: {e}")
+                await asyncio.sleep(1)
+            else:
+                log(f"    ⚠️ 等待超时（15秒），继续执行...")
 
             # 首次扫描(基于搜索结果)
             page_links = await get_links_by_text_content_v2(page, search_var)
