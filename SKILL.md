@@ -1,7 +1,7 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.2.1
+version: 3.3.0
 ---
 
 # SKILL.md - Guidance Web Access (v3.2.0)
@@ -59,6 +59,17 @@ version: 3.2.1
 
 **执行**:
 ```bash
+# 方式1：Cortana 主导模式（推荐）
+python web_access.py --cortana-plan '{
+  "task": "下载中药注射剂相关指导原则",
+  "search_url": "https://www.cde.org.cn/zdyz/fullsearchpage",
+  "search_var": "中药注射剂",
+  "filter_criteria": ["中药", "注射剂"],
+  "method": "search_only",
+  "save_dir": "~/Documents/工作/法规指导原则/中药注射剂"
+}'
+
+# 方式2：传统模式（脚本自动分析）
 python web_access.py "中药注射剂" --extra-filter "中药,注射剂" --save-dir "~/Documents/工作/法规指导原则/中药注射剂"
 ```
 
@@ -117,6 +128,7 @@ Cortana 分析后输出标准格式报告：
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.3.0 | 2026-03-26 | 新增 Cortana 主导模式：cortana_execute_flow() 接收 Cortana 制订的执行计划 |
 | v3.2.1 | 2026-03-26 | 优化翻页逻辑：多选择器检测、稳定性检测替代固定等待 |
 | v3.2.0 | 2026-03-26 | 固化 Cortana 任务理解流程；新增标准化报告格式输出；清理无用文件 |
 | v3.1.0 | 2026-03-26 | 新增 TaskUnderstanding 模块（任务理解、关键词生成、过滤策略、AI经验评估） |

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.2.1 (2026-03-26)
+版本: 3.3.0 (2026-03-26)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -948,8 +948,98 @@ async def main_flow(keyword, extra_filter=None, save_dir=None):
             log(f"🎉 任务完成:共下载 {downloaded} 个关联文件。")
         await browser.close()
 
+async def cortana_execute_flow(cortana_plan):
+    """
+    Cortana 主导的执行入口
+    接收 Cortana 制订的完整执行计划，直接执行
+    
+    cortana_plan 格式:
+    {
+        "task": "任务描述",
+        "search_url": "搜索页URL（可选）",
+        "search_var": "搜索关键词（可选）",
+        "filter_criteria": ["过滤条件1", "过滤条件2"],
+        "list_urls": ["列表页URL1", "列表页URL2"],  # 用于层级导航
+        "method": "search_only" | "navigate_only" | "both",
+        "extra_filter": "额外过滤条件（可选）",
+        "save_dir": "保存目录"
+    }
+    """
+    log(f"🎯 Cortana 执行计划: {cortana_plan.get('task', '')}")
+    
+    task = cortana_plan.get('task', '')
+    search_url = cortana_plan.get('search_url')
+    search_var = cortana_plan.get('search_var')
+    filter_criteria = cortana_plan.get('filter_criteria', [])
+    list_urls = cortana_plan.get('list_urls', [])
+    method = cortana_plan.get('method', 'both')
+    extra_filter = cortana_plan.get('extra_filter')
+    save_dir = cortana_plan.get('save_dir')
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
+        page = await browser.new_page()
+        await page.add_init_script('''() => {
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            delete navigator.__proto__.webdriver;
+        }''')
+        
+        # 构建探索点
+        pts = {}
+        
+        # 层级导航：列表页
+        if list_urls:
+            for idx, url in enumerate(list_urls):
+                pts[f"列表{idx+1}"] = {"url": url, "sv": None}
+        
+        # 搜索页
+        if search_url:
+            pts["搜索页"] = {"url": search_url, "sv": search_var}
+        
+        log(f"📌 执行方式: {method}")
+        log(f"📌 探索点: {list(pts.keys())}")
+        log(f"📌 搜索词: {repr(search_var)}")
+        log(f"📌 过滤条件: {filter_criteria}")
+        
+        # 构建 intent（用于 fuzzy_semantic_filter）
+        intent = {
+            'query': task,
+            'original': task,
+            'primary': search_var or task,
+            'qualifiers': filter_criteria,
+            'date': None,
+            'extra_filter': extra_filter
+        }
+        
+        # 执行探索
+        raw_list = await explore_with_pagination_v2(page, intent, pts, translatable=False)
+        
+        # 过滤
+        final_list = fuzzy_semantic_filter(raw_list, intent)
+        
+        # 额外过滤条件
+        if filter_criteria and final_list:
+            before = len(final_list)
+            final_list = [r for r in final_list if any(
+                q in (r['text'] + r['full_row']) for q in filter_criteria
+            )]
+            log(f"🔍 Cortana过滤条件 {filter_criteria}: {before} → {len(final_list)} 条")
+        
+        if not final_list:
+            log("❌ 未发现匹配项。")
+        else:
+            log(f"📋 发现 {len(final_list)} 条通告,提取全量附件...")
+            downloaded = await final_download(page, final_list, task, custom_save_dir=save_dir)
+            log(f"🎉 任务完成:共下载 {downloaded} 个关联文件。")
+        
+        await browser.close()
+
+
 if __name__ == "__main__":
-    # v3.0.2: 支持 --save-dir 参数
+    import json
+    
+    # 检查是否是 Cortana 计划模式
+    cortana_plan_arg = None
     keyword_arg = None
     extra_filter_arg = None
     save_dir_arg = None
@@ -957,7 +1047,10 @@ if __name__ == "__main__":
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg == '--extra-filter' and i + 1 < len(args) and not args[i + 1].startswith('--'):
+        if arg == '--cortana-plan' and i + 1 < len(args):
+            cortana_plan_arg = args[i + 1]
+            i += 2
+        elif arg == '--extra-filter' and i + 1 < len(args) and not args[i + 1].startswith('--'):
             extra_filter_arg = args[i + 1]
             i += 2
         elif arg == '--save-dir' and i + 1 < len(args) and not args[i + 1].startswith('--'):
@@ -968,8 +1061,19 @@ if __name__ == "__main__":
             i += 1
         else:
             i += 1
-    if keyword_arg:
+    
+    if cortana_plan_arg:
+        # Cortana 主导模式
+        try:
+            plan = json.loads(cortana_plan_arg)
+            asyncio.run(cortana_execute_flow(plan))
+        except json.JSONDecodeError:
+            print("❌ Cortana计划 JSON 格式错误")
+    elif keyword_arg:
+        # 传统模式（保持兼容）
         asyncio.run(main_flow(keyword_arg, extra_filter=extra_filter_arg, save_dir=save_dir_arg))
     else:
-        print("用法: python web_access.py <关键词> [--extra-filter <二级过滤关键词>] [--save-dir <保存目录>]")
+        print("用法:")
+        print("  python web_access.py <关键词> [--extra-filter <过滤>] [--save-dir <目录>]")
+        print("  python web_access.py --cortana-plan '<JSON执行计划>'")
     print("\n✅ 完成")
