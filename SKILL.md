@@ -1,7 +1,7 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.3.1
+version: 3.4.0
 ---
 
 # SKILL.md - Guidance Web Access (v3.2.0)
@@ -128,6 +128,7 @@ Cortana 分析后输出标准格式报告：
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.4.0 | 2026-03-26 | 完全Cortana主导模式：删除main_flow()等旧代码，简化架构 |
 | v3.3.1 | 2026-03-26 | 修复Cortana模式过滤逻辑：不再使用fuzzy_semantic_filter，直接使用探索结果+filter_criteria过滤 |
 | v3.3.0 | 2026-03-26 | 新增 Cortana 主导模式：cortana_execute_flow() 接收 Cortana 制订的执行计划 |
 | v3.2.1 | 2026-03-26 | 优化翻页逻辑：多选择器检测、稳定性检测替代固定等待 |
