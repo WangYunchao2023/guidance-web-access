@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.5.0 (2026-03-26)
+版本: 3.6.0 (2026-03-26)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -883,12 +883,437 @@ async def cortana_perception_flow(cortana_plan):
         }
 
 
+# ==================== 🚀 无经验自感知探索入口 ====================
+
+class PerceptionContext:
+    """感知探索上下文，保持探索状态"""
+    def __init__(self):
+        self.current_url = ""
+        self.current_page = None
+        self.browser = None
+        self.history = []  # 浏览历史
+        self.results = []  # 已发现的结果
+        self.search_inputs = []  # 可用的搜索框
+        self.nav_links = []  # 可用的导航链接
+        
+perception_ctx = None
+
+async def perception_sense(page):
+    """
+    感知当前页面结构
+    返回：搜索框列表、导航链接、当前URL、内容摘要
+    """
+    structure = await page.evaluate(r'''() => {
+        const result = {
+            'title': document.title,
+            'url': window.location.href,
+            'nav_links': [],
+            'search_inputs': [],
+            'main_links': [],
+            'content_links': [],
+            'content_summary': ''
+        };
+        
+        // 收集导航链接
+        const navSelectors = ['nav a', '.nav a', '.menu a', '.sidebar a', 'header a', '.left a', '.right a'];
+        for (const sel of navSelectors) {
+            document.querySelectorAll(sel).forEach(link => {
+                if (link.href && link.innerText.trim() && link.offsetWidth > 0) {
+                    result.nav_links.push({
+                        'text': link.innerText.trim().substring(0, 80),
+                        'href': link.href,
+                        'domain': link.hostname
+                    });
+                }
+            });
+        }
+        
+        // 收集搜索输入框
+        const inputs = document.querySelectorAll('input[type="text"], input[type="search"], input[placeholder*="搜索"], input[placeholder*="keyword"], input[placeholder*="查询"]');
+        inputs.forEach(inp => {
+            if (inp.offsetWidth > 0) {
+                const sel = inp.id ? `#${inp.id}` : inp.name ? `[name="${inp.name}"]` : inp.placeholder ? `[placeholder="${inp.placeholder}"]` : 'input';
+                result.search_inputs.push({
+                    'placeholder': inp.placeholder || inp.name || inp.id || 'text',
+                    'selector': sel
+                });
+            }
+        });
+        
+        // 收集内容区链接
+        const contentEls = document.querySelectorAll('.news_item, .list_item, li, tr, .result_item, .article');
+        contentEls.forEach(el => {
+            const links = el.querySelectorAll('a[href]');
+            links.forEach(link => {
+                if (link.href && link.innerText.trim()) {
+                    const text = link.innerText.trim().substring(0, 100);
+                    if (!result.content_links.find(l => l.href === link.href)) {
+                        result.content_links.push({
+                            'text': text,
+                            'href': link.href,
+                            'parent': el.className || el.tagName
+                        });
+                    }
+                }
+            });
+        });
+        
+        // 内容摘要
+        result.content_summary = document.body.innerText.substring(0, 800).replace(/\s+/g, ' ').trim();
+        
+        return result;
+    }''')
+    return structure
+
+async def perception_search(page, keyword, selector=None):
+    """
+    在感知模式下执行搜索
+    selector: 可选的搜索框选择器
+    """
+    if selector:
+        try:
+            await page.fill(selector, keyword)
+            await asyncio.sleep(0.5)
+            # 尝试点击搜索按钮
+            btn = await page.query_selector('button:has-text("搜索"), .search-btn, input[type="submit"]')
+            if btn:
+                await btn.click()
+            else:
+                await page.keyboard.press("Enter")
+            await asyncio.sleep(3)
+            log(f"🔍 已使用 {selector} 搜索: {keyword}")
+            return True
+        except Exception as e:
+            log(f"⚠️ 搜索失败: {e}")
+            return False
+    else:
+        # 尝试找到任意搜索框
+        inputs = await page.query_selector_all('input[type="text"], input[placeholder*="搜索"]')
+        for inp in inputs:
+            try:
+                if await inp.is_visible():
+                    sel = await inp.get_attribute('id') or await inp.get_attribute('name') or await inp.get_attribute('placeholder')
+                    await inp.fill(keyword)
+                    await asyncio.sleep(0.5)
+                    await page.keyboard.press("Enter")
+                    await asyncio.sleep(3)
+                    log(f"🔍 已搜索: {keyword} (使用 {sel})")
+                    return True
+            except:
+                continue
+        return False
+
+async def perception_click(page, target):
+    """
+    在感知模式下点击目标
+    target: URL片段、文本或选择器
+    """
+    try:
+        # 先尝试文本匹配
+        if isinstance(target, str):
+            # 尝试多种点击方式
+            selectors = [
+                f'a:has-text("{target}")',
+                f'button:has-text("{target}")',
+                f'text="{target}"'
+            ]
+            for sel in selectors:
+                try:
+                    elem = await page.query_selector(sel)
+                    if elem and await elem.is_visible():
+                        await elem.click()
+                        await asyncio.sleep(2)
+                        log(f"🖱️ 已点击: {target}")
+                        return True
+                except:
+                    continue
+        return False
+    except Exception as e:
+        log(f"⚠️ 点击失败: {e}")
+        return False
+
+async def perception_extract_results(page, filter_criteria=None):
+    """
+    提取当前页面的结果
+    filter_criteria: 过滤条件列表
+    """
+    links = await page.evaluate(r'''() => {
+        const results = [];
+        const seenUrls = new Set();
+        
+        // 查找结果行
+        const rows = document.querySelectorAll('.news_item, .list_item, li, tr, .result_item');
+        rows.forEach(row => {
+            const titleEl = row.querySelector('a') || row;
+            const title = titleEl.innerText.trim();
+            const href = titleEl.href || '';
+            
+            // 查找附件链接
+            const fileLinks = row.querySelectorAll('a[href*=".pdf"], a[href*=".doc"], a[href*=".docx"], a[href*=".xlsx"]');
+            
+            if (href && !seenUrls.has(href) && title.length > 5) {
+                seenUrls.add(href);
+                results.push({
+                    'title': title.substring(0, 200),
+                    'href': href,
+                    'files': Array.from(fileLinks).map(f => ({'text': f.innerText.trim(), 'href': f.href}))
+                });
+            }
+        });
+        
+        return results;
+    }''')
+    
+    # 过滤
+    if filter_criteria and links:
+        filtered = []
+        for link in links:
+            text = link['title'] + ' ' + ' '.join([f['text'] for f in link.get('files', [])])
+            if any(c in text for c in filter_criteria):
+                filtered.append(link)
+        return filtered
+    
+    return links
+
+def print_perception_report(structure, depth, max_depth):
+    """打印感知报告"""
+    log(f"\n{'='*60}")
+    log(f"📄 感知报告 [深度 {depth}/{max_depth}]")
+    log(f"{'='*60}")
+    log(f"标题: {structure.get('title', 'N/A')}")
+    log(f"URL: {structure.get('url', 'N/A')}")
+    
+    search_inputs = structure.get('search_inputs', [])
+    log(f"\n🔍 搜索框 ({len(search_inputs)}个):")
+    for inp in search_inputs[:5]:
+        log(f"   - {inp['selector']} (placeholder: {inp['placeholder']})")
+    
+    nav_links = structure.get('nav_links', [])
+    log(f"\n🧭 导航链接 ({len(nav_links)}个):")
+    # 去重并显示
+    shown = set()
+    for link in nav_links[:10]:
+        key = link['text']
+        if key and key not in shown:
+            shown.add(key)
+            log(f"   [{link['text']}] -> {link['href'][:80]}")
+    
+    content_links = structure.get('content_links', [])
+    log(f"\n📄 内容链接 ({len(content_links)}个):")
+    shown = set()
+    for link in content_links[:10]:
+        key = link['text']
+        if key and key not in shown and len(key) > 10:
+            shown.add(key)
+            log(f"   [{link['text'][:60]}]")
+    
+    log(f"\n📝 内容摘要:")
+    summary = structure.get('content_summary', 'N/A')
+    log(f"   {summary[:300]}...")
+    log(f"{'='*60}")
+
+async def cortana_auto_flow(cortana_plan):
+    """
+    Cortana 自感知自动探索入口
+    接收任务策略，自动循环探索页面，Cortana 决策下一步
+    
+    cortana_plan 格式:
+    {
+        "task": "任务描述",
+        "base_url": "起始URL",
+        "keywords": ["关键词1", "关键词2", ...],  // 搜索关键词列表
+        "filter_criteria": ["过滤条件"],
+        "save_dir": "保存目录",
+        "strategy": "search_first" | "navigate_first" | "mixed",
+        "max_depth": 5,   // 最大探索深度
+        "max_list": 5     // 最多探索的链接数
+    }
+    
+    工作流程：
+    1. Cortana 感知当前页面
+    2. Cortana 分析并决策下一步
+    3. 执行决策（搜索/点击/提取）
+    4. 循环直到找到结果或达到限制
+    """
+    global perception_ctx
+    
+    task = cortana_plan.get('task', '')
+    base_url = cortana_plan.get('base_url')
+    keywords = cortana_plan.get('keywords', [])
+    filter_criteria = cortana_plan.get('filter_criteria', [])
+    save_dir = cortana_plan.get('save_dir')
+    strategy = cortana_plan.get('strategy', 'search_first')
+    max_depth = cortana_plan.get('max_depth', 5)
+    max_list = cortana_plan.get('max_list', 5)
+    
+    if not base_url:
+        log("❌ cortana_auto_flow 需要 base_url 参数")
+        return
+    
+    if not keywords:
+        log("❌ cortana_auto_flow 需要 keywords 参数")
+        return
+    
+    log(f"🎯 Cortana 自动探索: {task}")
+    log(f"📌 起始URL: {base_url}")
+    log(f"📌 关键词: {keywords}")
+    log(f"📌 策略: {strategy}")
+    log(f"📌 过滤条件: {filter_criteria}")
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
+        page = await browser.new_page()
+        await page.add_init_script('''() => {
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            delete navigator.__proto__.webdriver;
+        }''')
+        
+        # 初始化上下文
+        perception_ctx = PerceptionContext()
+        perception_ctx.browser = browser
+        perception_ctx.current_page = page
+        
+        depth = 0
+        current_url = base_url
+        
+        while depth < max_depth:
+            log(f"\n{'='*60}")
+            log(f"🔄 探索循环 [深度 {depth+1}/{max_depth}]")
+            log(f"{'='*60}")
+            
+            try:
+                await page.goto(current_url, wait_until='domcontentloaded')
+                await asyncio.sleep(3)
+            except Exception as e:
+                log(f"⚠️ 页面加载失败: {e}")
+                break
+            
+            # 感知当前页面
+            structure = await perception_sense(page)
+            perception_ctx.current_url = structure.get('url', current_url)
+            
+            # 打印感知报告
+            print_perception_report(structure, depth+1, max_depth)
+            
+            # 构建 Cortana 决策请求
+            decision_request = {
+                "depth": depth + 1,
+                "url": perception_ctx.current_url,
+                "title": structure.get('title', ''),
+                "search_inputs": structure.get('search_inputs', []),
+                "nav_links": structure.get('nav_links', [])[:max_list],
+                "content_links": structure.get('content_links', [])[:20],
+                "keywords": keywords,
+                "filter_criteria": filter_criteria,
+                "strategy": strategy,
+                "results_found": len(perception_ctx.results)
+            }
+            
+            # 输出 Cortana 决策点
+            log(f"\n{'='*60}")
+            log(f"🤖 Cortana 决策点")
+            log(f"{'='*60}")
+            log(f"📊 当前状态:")
+            log(f"   深度: {depth+1}/{max_depth}")
+            log(f"   URL: {perception_ctx.current_url}")
+            log(f"   搜索框: {len(decision_request['search_inputs'])}个")
+            log(f"   导航链接: {len(decision_request['nav_links'])}个")
+            log(f"   已发现结果: {decision_request['results_found']}个")
+            log(f"")
+            log(f"📋 可用操作:")
+            log(f"   1. search - 使用关键词搜索")
+            log(f"      示例: search|中药注射剂")
+            log(f"   2. click - 点击导航链接")
+            log(f"      示例: click|指导原则")
+            log(f"   3. extract - 提取当前页结果")
+            log(f"      示例: extract")
+            log(f"   4. next_page - 翻页")
+            log(f"      示例: next_page")
+            log(f"   5. back - 返回上一页")
+            log(f"      示例: back")
+            log(f"   6. done - 探索完成")
+            log(f"      示例: done")
+            log(f"")
+            log(f"💡 当前策略: {strategy}")
+            log(f"💡 关键词: {keywords}")
+            log(f"{'='*60}")
+            log(f"")
+            log(f"请输入决策指令（如: search|中药注射剂）:")
+            
+            # 这里需要 Cortana 决策，暂时自动执行策略
+            # 实际使用时由外部调用者输入决策
+            
+            # 演示：基于策略自动决策
+            if strategy == "search_first":
+                # 搜索优先策略
+                if decision_request['search_inputs']:
+                    search_kw = keywords[0] if keywords else ""
+                    inp = decision_request['search_inputs'][0]
+                    await perception_search(page, search_kw, inp.get('selector'))
+                    strategy_applied = "search"
+                elif decision_request['nav_links']:
+                    link = decision_request['nav_links'][0]
+                    await perception_click(page, link['text'])
+                    strategy_applied = "navigate"
+                else:
+                    log("⚠️ 未找到可操作的元素")
+                    break
+            elif strategy == "navigate_first":
+                # 导航优先策略
+                if decision_request['nav_links']:
+                    link = decision_request['nav_links'][0]
+                    await perception_click(page, link['text'])
+                    strategy_applied = "navigate"
+                elif decision_request['search_inputs']:
+                    search_kw = keywords[0] if keywords else ""
+                    inp = decision_request['search_inputs'][0]
+                    await perception_search(page, search_kw, inp.get('selector'))
+                    strategy_applied = "search"
+                else:
+                    log("⚠️ 未找到可操作的元素")
+                    break
+            else:  # mixed
+                # 混合策略：先尝试导航找到搜索框
+                if decision_request['search_inputs'] and depth == 0:
+                    search_kw = keywords[0] if keywords else ""
+                    inp = decision_request['search_inputs'][0]
+                    await perception_search(page, search_kw, inp.get('selector'))
+                    strategy_applied = "search"
+                else:
+                    # 交替使用
+                    if depth % 2 == 0 and decision_request['nav_links']:
+                        link = decision_request['nav_links'][0]
+                        await perception_click(page, link['text'])
+                        strategy_applied = "navigate"
+                    elif decision_request['search_inputs']:
+                        search_kw = keywords[depth % len(keywords)] if keywords else ""
+                        inp = decision_request['search_inputs'][0]
+                        await perception_search(page, search_kw, inp.get('selector'))
+                        strategy_applied = "search"
+                    else:
+                        break
+            
+            depth += 1
+            await asyncio.sleep(2)
+        
+        # 提取最终结果
+        if perception_ctx.results:
+            log(f"\n📋 发现 {len(perception_ctx.results)} 个结果")
+            # 下载结果
+            if save_dir:
+                log(f"📁 保存目录: {save_dir}")
+        
+        await browser.close()
+        log(f"\n✅ 探索完成")
+
+
 if __name__ == "__main__":
     import json
     
     # Cortana 主导模式
     cortana_plan_arg = None
     perception_arg = None
+    auto_arg = None
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -899,6 +1324,9 @@ if __name__ == "__main__":
         elif arg == '--perception' and i + 1 < len(args):
             perception_arg = args[i + 1]
             i += 2
+        elif arg == '--auto' and i + 1 < len(args):
+            auto_arg = args[i + 1]
+            i += 2
         else:
             i += 1
     
@@ -908,6 +1336,12 @@ if __name__ == "__main__":
             asyncio.run(cortana_execute_flow(plan))
         except json.JSONDecodeError:
             print("❌ Cortana计划 JSON 格式错误")
+    elif auto_arg:
+        try:
+            plan = json.loads(auto_arg)
+            asyncio.run(cortana_auto_flow(plan))
+        except json.JSONDecodeError:
+            print("❌ 自动探索计划 JSON 格式错误")
     elif perception_arg:
         try:
             plan = json.loads(perception_arg)
@@ -916,12 +1350,19 @@ if __name__ == "__main__":
             print("❌ 自感知计划 JSON 格式错误")
     else:
         print("用法:")
-        print("  python web_access.py --cortana-plan '<JSON执行计划>'")
-        print("  python web_access.py --perception '<JSON感知计划>'")
+        print("  python web_access.py --cortana-plan '<JSON执行计划>'  # 有经验模式")
+        print("  python web_access.py --auto '<JSON探索计划>'         # 无经验自动探索")
+        print("  python web_access.py --perception '<JSON感知计划>'    # 单次感知")
         print("")
         print("示例（有经验-url已知）:")
-        print("  --cortana-plan '{\"task\":\"下载沟通交流指导原则\",\"search_url\":\"https://www.cde.org.cn/zdyz/fullsearchpage\",\"search_var\":\"沟通交流\"}'")
+        print('  --cortana-plan \'{"task":"下载沟通交流指导原则","search_url":"https://www.cde.org.cn/zdyz/fullsearchpage","search_var":"沟通交流"}\'')
         print("")
-        print("示例（无经验-自感知探索）:")
+        print("示例（无经验-自动探索）:")
+        print('  --auto \'{"task":"下载某类指导原则","base_url":"https://www.cde.org.cn","keywords":["某关键词"],"strategy":"search_first"}\'')
+        print("")
+        print("策略选项: search_first | navigate_first | mixed")
+        print("  search_first: 搜索优先")
+        print("  navigate_first: 导航优先")
+        print("  mixed: 搜索+导航同时")
         print("  --perception '{\"task\":\"下载某类指导原则\",\"base_url\":\"https://www.cde.org.cn\",\"search_var\":\"某关键词\"}'")
     print("\n✅ 完成")
