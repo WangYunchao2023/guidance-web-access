@@ -288,7 +288,7 @@ explore_with_pagination_v2你说这个函数有输入“关键词”的能力，
  
  ### 新架构                                                                     
     Cortana（我）先分析 → 制订策略 → 调用脚本传入精确参数 → 脚本执行
- 1. web_access.py：增加接收 Cortana 策略参数的入口                              
+ 1. web_access.py：增加接收 Cortana 策略参数的入口       ——  后来证明这样不对，又进行了修改                         
  2. 保留必要函数：用于脚本内部某些场景                                          
  3. 简化主流程：Cortana 主导时，脚本只执行  
  
@@ -305,6 +305,74 @@ explore_with_pagination_v2你说这个函数有输入“关键词”的能力，
  ├────────────────────────┼────────────────────────────────────┤                
  │ main_flow()            │ 保留：传统自动分析模式（向后兼容） │   
  
+ 完整结构                                                                       
+                                                                                
+ ```                                                                            
+   guidance-web-access/                                                         
+   │                                                                            
+   ├── SKILL.md                          # 主技能文档                           
+   │                                                                            
+   ├── scripts/                                                                 
+   │   ├── web_access.py                 # 主执行脚本                           
+   │   ├── smart_navigate.py              # 导航脚本                            
+   │   └── web_fetch.py                  # 网页抓取                             
+   │                                                                            
+   └── references/                       # 配置文件库                           
+       ├── user_overrides.yaml           # 人工经验规则                         
+       ├── anti-bot.md                   # 反爬配置                             
+       ├── error-handling.md             # 错误处理                             
+       ├── output-config.md              # 输出配置                             
+       └── supported-sites.md            # 支持的网站                           
+ ```                                                      
+ web_access.py 函数架构                                                         
+                                                                                
+ ```                                                                            
+   主入口函数                                                                   
+   ├── main_flow()                       # 传统模式入口（脚本自动分析）         
+   │       ├── get_user_overrides()       # 加载经验规则                        
+   │       ├── extract_task_intent()      # 解析任务语义                        
+   │       ├── match_override()           # 匹配经验规则                        
+   │       └── explore_with_pagination_v2()# 探索+翻页                          
+   │                                                                            
+   └── cortana_execute_flow()            # Cortana主导模式入口（新增）          
+           └── 直接执行Cortana制订的计划                                        
+                                                                                
+   探索执行函数                                                                 
+   ├── explore_with_pagination_v2()      # 探索+翻页（主要）                    
+   │       ├── smart_interact()           # 关键词/日期输入                     
+   │       ├── get_links_by_text_content_v2()  # 扫描结果                       
+   │       └── [翻页增强逻辑]              # 多选择器+稳定性检测                
+   │                                                                            
+   └── explore_with_pagination()          # 旧版探索（保留）                    
+                                                                                
+   辅助函数                                                                     
+   ├── fuzzy_semantic_filter()           # 语义过滤                             
+   ├── generate_truncated_variants()      # 生成截短变体                        
+   ├── extract_var_from_match()           # 提取匹配变量                        
+   ├── request_translation()             # 请求翻译                             
+   └── final_download()                  # 下载文件                             
+ ```                                                    
+ 
+ 
+ 现在比较乱，把非Cortana主导的代码都删除吧。如main_f low相关的。          
+ 
+V3.4.0
+清理后的函数架构                                                               
+                                                                                
+ ```                                                                            
+   web_access.py (Cortana主导模式)                                              
+   │                                                                            
+   ├── log()                           # 日志                                   
+   ├── generate_truncated_variants()    # 辅助函数                              
+   │                                                                            
+   ├── get_links_by_text_content_v2()  # 内容扫描                               
+   ├── smart_interact()                # 关键词输入                             
+   ├── explore_with_pagination_v2()   # 探索+翻页                               
+   │                                                                            
+   ├── fuzzy_semantic_filter()         # 过滤（备用）                           
+   ├── final_download()               # 下载                                    
+   │                                                                            
+   └── cortana_execute_flow()        # Cortana主导入口  
  
  
  

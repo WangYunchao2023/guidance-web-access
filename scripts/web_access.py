@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.4.0 (2026-03-26)
+版本: 3.5.0 (2026-03-26)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -750,18 +750,155 @@ async def cortana_execute_flow(cortana_plan):
         await browser.close()
 
 
+async def cortana_perception_flow(cortana_plan):
+    """
+    Cortana 自感知页面结构的探索入口
+    
+    接收基础URL，让 Cortana 分析页面结构后决定下一步操作
+    
+    cortana_plan 格式:
+    {
+        "task": "任务描述",
+        "base_url": "起始URL（如CDE首页）",
+        "search_var": "搜索关键词（可选）",
+        "filter_criteria": ["过滤条件"],
+        "save_dir": "保存目录"
+    }
+    
+    工作流程：
+    1. 打开 base_url
+    2. 感知页面结构（导航菜单、搜索框、分类链接）
+    3. 输出感知结果供 Cortana 分析
+    4. 返回感知结果和当前页面状态
+    """
+    task = cortana_plan.get('task', '')
+    base_url = cortana_plan.get('base_url')
+    search_var = cortana_plan.get('search_var')
+    filter_criteria = cortana_plan.get('filter_criteria', [])
+    save_dir = cortana_plan.get('save_dir')
+    
+    if not base_url:
+        log("❌ cortana_perception_flow 需要 base_url 参数")
+        return
+    
+    log(f"🎯 Cortana 自感知探索: {task}")
+    log(f"📌 起始URL: {base_url}")
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
+        page = await browser.new_page()
+        await page.add_init_script('''() => {
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            delete navigator.__proto__.webdriver;
+        }''')
+        
+        # 打开起始页面
+        await page.goto(base_url, wait_until='domcontentloaded')
+        await asyncio.sleep(3)
+        
+        # 感知页面结构
+        page_structure = await page.evaluate(r'''() => {
+            const result = {
+                'title': document.title,
+                'url': window.location.href,
+                'nav_links': [],
+                'search_inputs': [],
+                'main_links': [],
+                'content_summary': ''
+            };
+            
+            // 收集导航链接
+            const navSelectors = ['nav a', '.nav a', '.menu a', '.sidebar a', 'header a'];
+            for (const sel of navSelectors) {
+                const links = document.querySelectorAll(sel);
+                links.forEach(link => {
+                    if (link.href && link.innerText.trim()) {
+                        result.nav_links.push({
+                            'text': link.innerText.trim().substring(0, 50),
+                            'href': link.href
+                        });
+                    }
+                });
+            }
+            
+            // 收集搜索输入框
+            const inputs = document.querySelectorAll('input[type="text"], input[placeholder*="搜索"], input[placeholder*="keyword"]');
+            inputs.forEach(inp => {
+                if (inp.offsetWidth > 0) {
+                    result.search_inputs.push({
+                        'placeholder': inp.placeholder || inp.name || inp.id || 'text input',
+                        'selector': inp.id ? `#${inp.id}` : inp.name ? `[name="${inp.name}"]` : inp.placeholder ? `[placeholder="${inp.placeholder}"]` : 'input'
+                    });
+                }
+            });
+            
+            // 收集主要内容链接（在前1000字符内）
+            const bodyText = document.body.innerText.substring(0, 1000);
+            const links = document.querySelectorAll('a[href]');
+            links.forEach(link => {
+                if (link.href && link.hostname === window.location.hostname && link.innerText.trim()) {
+                    result.main_links.push({
+                        'text': link.innerText.trim().substring(0, 50),
+                        'href': link.href
+                    });
+                }
+            });
+            
+            result.content_summary = document.body.innerText.substring(0, 500);
+            
+            return result;
+        }''')
+        
+        # 输出感知结果
+        log(f"\n{'='*60}")
+        log(f"📄 页面结构感知报告")
+        log(f"{'='*60}")
+        log(f"标题: {page_structure.get('title', 'N/A')}")
+        log(f"URL: {page_structure.get('url', 'N/A')}")
+        log(f"\n🔍 搜索框 ({len(page_structure.get('search_inputs', []))}个):")
+        for inp in page_structure.get('search_inputs', [])[:5]:
+            log(f"   - {inp['selector']} (placeholder: {inp['placeholder']})")
+        log(f"\n🧭 导航链接 ({len(page_structure.get('nav_links', []))}个):")
+        for link in page_structure.get('nav_links', [])[:10]:
+            log(f"   - [{link['text']}] -> {link['href']}")
+        log(f"\n📄 主要内容链接 ({len(page_structure.get('main_links', []))}个):")
+        for link in page_structure.get('main_links', [])[:10]:
+            log(f"   - [{link['text']}] -> {link['href']}")
+        log(f"\n📝 内容摘要:")
+        log(f"   {page_structure.get('content_summary', 'N/A').replace(chr(10), ' ').substring(0, 200)}...")
+        log(f"{'='*60}")
+        
+        log(f"\n💡 Cortana 分析建议:")
+        log(f"   1. 根据感知结果，决定下一步操作")
+        log(f"   2. 可使用 search_var='{search_var}' 在搜索框中搜索")
+        log(f"   3. 可使用 filter_criteria={filter_criteria} 过滤结果")
+        log(f"   4. 可继续探索 nav_links 或 main_links 中的链接")
+        
+        # 返回感知结果供 Cortana 决策
+        return {
+            'success': True,
+            'page': page,
+            'structure': page_structure,
+            'browser': browser
+        }
+
+
 if __name__ == "__main__":
     import json
     
     # Cortana 主导模式
     cortana_plan_arg = None
+    perception_arg = None
     args = sys.argv[1:]
     i = 0
     while i < len(args):
         arg = args[i]
         if arg == '--cortana-plan' and i + 1 < len(args):
             cortana_plan_arg = args[i + 1]
-            break
+            i += 2
+        elif arg == '--perception' and i + 1 < len(args):
+            perception_arg = args[i + 1]
+            i += 2
         else:
             i += 1
     
@@ -771,7 +908,20 @@ if __name__ == "__main__":
             asyncio.run(cortana_execute_flow(plan))
         except json.JSONDecodeError:
             print("❌ Cortana计划 JSON 格式错误")
+    elif perception_arg:
+        try:
+            plan = json.loads(perception_arg)
+            asyncio.run(cortana_perception_flow(plan))
+        except json.JSONDecodeError:
+            print("❌ 自感知计划 JSON 格式错误")
     else:
-        print("用法: python web_access.py --cortana-plan '<JSON执行计划>'")
-        print("示例: python web_access.py --cortana-plan '{\"task\":\"下载沟通交流指导原则\",\"search_url\":\"https://www.cde.org.cn/zdyz/fullsearchpage\",\"search_var\":\"沟通交流\",\"save_dir\":\"~/Documents/工作\"}'")
+        print("用法:")
+        print("  python web_access.py --cortana-plan '<JSON执行计划>'")
+        print("  python web_access.py --perception '<JSON感知计划>'")
+        print("")
+        print("示例（有经验-url已知）:")
+        print("  --cortana-plan '{\"task\":\"下载沟通交流指导原则\",\"search_url\":\"https://www.cde.org.cn/zdyz/fullsearchpage\",\"search_var\":\"沟通交流\"}'")
+        print("")
+        print("示例（无经验-自感知探索）:")
+        print("  --perception '{\"task\":\"下载某类指导原则\",\"base_url\":\"https://www.cde.org.cn\",\"search_var\":\"某关键词\"}'")
     print("\n✅ 完成")
