@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.2.0 (2026-03-26)
+版本: 3.2.1 (2026-03-26)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -53,13 +53,14 @@ def extract_task_intent(task_keyword):
     primary_kws = [k for k in PRIMARY_KEYWORDS if k in task_keyword]
     qualifier_kws = [k for k in QUALIFIER_KEYWORDS if k in task_keyword]
 
-    # 3. 如果没有主体词,检查是否全是限定词(如"沟通交流"单独出现)
-    if not primary_kws:
-        primary_kws = [task_keyword]  # 回退:整句作为主体
-        qualifier_kws = []
-
-    # 4. 决定主搜索词(用于 override 匹配和入口选择)
-    primary = primary_kws[0] if len(primary_kws) == 1 else (primary_kws[0] if primary_kws else task_keyword)
+    # 3. 如果没有主体词但有限定词,用第一个限定词作为主体
+    # v3.2.1: 不再清空 qualifier_kws,保留用于后续匹配
+    if not primary_kws and qualifier_kws:
+        primary = qualifier_kws[0]  # 用第一个限定词作为主体
+    elif not primary_kws:
+        primary = task_keyword  # 回退:整句作为主体
+    else:
+        primary = primary_kws[0] if len(primary_kws) == 1 else (primary_kws[0] if primary_kws else task_keyword)
 
     # 5. 构建查询:主体词 + 日期(限定词不参与入口搜索,用于结果过滤)
     search_query_parts = [primary]
@@ -137,14 +138,25 @@ def generate_truncated_variants(keyword):
         if v not in seen: seen.add(v); unique.append(v)
     return unique
 
-def match_override(keyword, primary=None):
+def match_override(keyword, primary=None, qualifiers=None, intent_query=None):
     """升级版 override 匹配:支持变量提取 + 方法明确性"""
-    match_key = primary if primary else keyword
     overrides = get_user_overrides()
-
+    
+    # v3.2.1: 构造候选匹配词列表(按优先级排序)
+    candidates = []
+    if primary and qualifiers and len(qualifiers) >= 1:
+        # 场景: 用户说"XX相关的指导原则" → 构造完整短语
+        constructed = f"{''.join(qualifiers)}相关的指导原则"
+        candidates.append(constructed)
+    if primary:
+        candidates.append(primary)
+    if intent_query:
+        candidates.append(intent_query)
+    candidates.append(keyword)
+    
     for entry in overrides:
         pattern = entry.get('task_pattern', '')
-        for kw in [match_key, keyword]:
+        for kw in candidates:
             if re.search(pattern, kw):
                 entry_copy = dict(entry)
                 entry_copy['_matched_on'] = pattern
@@ -700,20 +712,72 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                     for l in page_links:
                         if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
 
-            # 翻页
+            # 翻页（增强版）
             for p_idx in range(2, 6):
-                next_btn = await page.query_selector('text="下一页"') or await page.query_selector('a:has-text(">")')
-                if next_btn:
+                try:
+                    # 多种选择器检测"下一页"按钮
+                    next_btn = (
+                        await page.query_selector('text="下一页"') or
+                        await page.query_selector('a:has-text("下一页")') or
+                        await page.query_selector('button:has-text("下一页")') or
+                        await page.query_selector('a:has-text(">")') or
+                        await page.query_selector('.layui-laypage-next') or
+                        await page.query_selector('[aria-label="下一页"]')
+                    )
+                    
+                    if not next_btn:
+                        log(f"    📄 第{p_idx-1}页已完成，未找到下一页按钮，停止翻页")
+                        break
+                    
+                    # 检查按钮是否可点击
+                    is_disabled = await next_btn.get_attribute('disabled')
                     cls = await next_btn.get_attribute('class') or ''
                     txt = (await next_btn.inner_text()).strip()
-                    if 'layui-disabled' not in cls and txt:
-                        await next_btn.click(); await asyncio.sleep(5)
-                        page_links = await get_links_by_text_content_v2(page, None)
-                        for l in page_links:
-                            if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-                    else:
+                    
+                    # 判断是否禁用：class包含disabled或aria-disabled，或有disabled属性
+                    if is_disabled is not None or 'layui-disabled' in cls or 'disabled' in cls:
+                        if 'layui-disabled' not in cls:
+                            pass  # 可能只是最后一页
+                        log(f"    📄 第{p_idx-1}页已完成，翻页按钮已禁用，停止翻页")
                         break
-                else:
+                    
+                    if not txt:
+                        log(f"    📄 第{p_idx-1}页已完成，按钮无文本，停止翻页")
+                        break
+                    
+                    log(f"    📄 翻到第{p_idx}页...")
+                    await next_btn.click()
+                    
+                    # 稳定性检测：等待新内容加载
+                    prev_count = 0
+                    prev_text_len = 0
+                    stable_count = 0
+                    for _wait in range(15):
+                        await asyncio.sleep(1)
+                        try:
+                            count = await page.evaluate('document.querySelectorAll("a").length')
+                            text_len = await page.evaluate('document.body.innerText.length')
+                            # 新内容已加载（数量变化或内容变化）
+                            if count > 10 and text_len > 500 and count == prev_count and text_len == prev_text_len:
+                                stable_count += 1
+                                if stable_count >= 2:
+                                    log(f"    ✅ 第{p_idx}页已稳定加载")
+                                    break
+                            else:
+                                stable_count = 0
+                            prev_count = count
+                            prev_text_len = text_len
+                        except:
+                            pass
+                    
+                    # 扫描当前页
+                    page_links = await get_links_by_text_content_v2(page, None)
+                    log(f"    📄 第{p_idx}页: 找到 {len(page_links)} 条")
+                    for l in page_links:
+                        if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+                        
+                except Exception as e:
+                    log(f"    ⚠️ 翻页异常: {e}")
                     break
         except Exception as e:
             log(f"⚠️ 探索异常: {e}")
@@ -808,7 +872,7 @@ async def main_flow(keyword, extra_filter=None, save_dir=None):
         }''')
 
         # 升级:优先用主体词匹配 override
-        entry = match_override(keyword, primary=intent.get('primary'))
+        entry = match_override(keyword, primary=intent.get('primary'), qualifiers=intent.get('qualifiers'), intent_query=intent.get('query'))
 
         if entry:
             log(f"🧠 经验命中: {entry.get('note', '')} (匹配依据: {entry.get('_matched_on', '')})")
@@ -824,7 +888,9 @@ async def main_flow(keyword, extra_filter=None, save_dir=None):
             # sv=None 表示不填搜索框(由 smart_interact 的 date+primary 逻辑决定填什么)
             # sv=str 表示用该字符串填搜索框
             pts = {}
-            if list_urls:
+            # v3.2.1: 根据 method 决定是否使用 list_urls
+            # search_only 时只使用 search_url，不再添加 list_urls
+            if list_urls and method != 'search_only':
                 for idx, url in enumerate(list_urls):
                     # 列表页:用 intent['primary'] 填标题(sv=None 时 smart_interact 会走 date+primary 分支)
                     pts[f"列表{idx+1}"] = {"url": url, "sv": None}
