@@ -1,10 +1,10 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.0.2
+version: 3.0.3
 ---
 
-# SKILL.md - Guidance Web Access (v3.0.2)
+# SKILL.md - Guidance Web Access (v3.0.3)
 
 ## 🌟 核心理念
 - **经验优先 (Experience First)**：系统会优先检索 `user_overrides.yaml`。若匹配任务关键词，将放弃默认路径，直奔"人工经验"锁定的高价值 URL。
@@ -67,6 +67,7 @@ python web_access.py "稳定性" --extra-filter "化药"
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.0.3 | 2026-03-26 | 稳定性检测替代盲目等待，确保内容加载完成后再扫描 |
 | v3.0.2 | 2026-03-25 | 默认目录 + --save-dir参数支持 |
 | v3.0.0 | 2026-03-25 | 全扫描+关键词匹配方案 |
 | v2.9.1 | 2026-03-25 | 增强噪音过滤 |
