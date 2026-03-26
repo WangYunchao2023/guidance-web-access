@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.0.5 (2026-03-26)
+版本: 3.0.2 (2026-03-25)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
@@ -539,29 +539,8 @@ async def explore_with_pagination(page, intent, exploration_points, search_var=N
             # 策略 1:正常搜(search_var 优先,如"沟通交流")
             filled = await smart_interact(page, intent, search_var=search_var)
 
-            # =============================================
-            # 稳定性检测：等待内容加载完成
-            # 原理：连续2次检测到相同数量的内容项，认为加载完成
-            # =============================================
-            log(f"    ⏳ 等待内容加载稳定...")
-            prev_count = 0
-            stable_count = 0
-            for _wait in range(15):  # 最多等15秒
-                try:
-                    count = await page.evaluate('document.querySelectorAll("a").length')
-                    if count > 10 and count == prev_count:
-                        stable_count += 1
-                        if stable_count >= 2:  # 连续2次稳定
-                            log(f"    ✅ 内容已稳定加载（{_wait}秒），检测到 {count} 个链接")
-                            break
-                    else:
-                        stable_count = 0
-                    prev_count = count
-                except Exception as e:
-                    log(f"    ⚠️ 稳定性检测异常: {e}")
-                await asyncio.sleep(1)
-            else:
-                log(f"    ⚠️ 等待超时（15秒），继续执行...")
+            # 等待搜索结果加载
+            await asyncio.sleep(5)
 
             # 首次扫描(基于搜索结果)
             page_links = await get_links_by_text_content_v2(page, search_var)
@@ -667,30 +646,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
 
             # 填充搜索(sv=None 时 smart_interact 会用 date+primary 逻辑)
             await smart_interact(page, intent, search_var=sv)
-            
-            # 稳定性检测：等待搜索结果加载完成
-            log(f"    ⏳ 等待搜索结果稳定...")
-            prev_count = 0
-            prev_text_len = 0
-            stable_count = 0
-            for _wait in range(20):
-                try:
-                    count = await page.evaluate('document.querySelectorAll("a").length')
-                    text_len = await page.evaluate('document.body.innerText.length')
-                    if count > 10 and text_len > 500 and count == prev_count and text_len == prev_text_len:
-                        stable_count += 1
-                        if stable_count >= 2:
-                            log(f"    ✅ 搜索结果已稳定（{_wait}秒），{count}个链接，{text_len}字符")
-                            break
-                    else:
-                        stable_count = 0
-                    prev_count = count
-                    prev_text_len = text_len
-                except Exception as e:
-                    log(f"    ⚠️ 搜索稳定性检测异常: {e}")
-                await asyncio.sleep(1)
-            else:
-                log(f"    ⚠️ 搜索结果等待超时（20秒），继续执行...")
+            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
 
             page_links = await get_links_by_text_content_v2(page, sv)
             log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
@@ -727,26 +683,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
                             log(f"    🔄 截短重试: '{var}'")
                             await page.goto(url); await asyncio.sleep(5)
                             await smart_interact(page, intent, search_var=var)
-                            # 稳定性检测
-                            prev_count = 0
-                            prev_text_len = 0
-                            stable_count = 0
-                            for _wait2 in range(15):
-                                try:
-                                    count2 = await page.evaluate('document.querySelectorAll("a").length')
-                                    text_len2 = await page.evaluate('document.body.innerText.length')
-                                    if count2 > 10 and text_len2 > 500 and count2 == prev_count and text_len2 == prev_text_len:
-                                        stable_count += 1
-                                        if stable_count >= 2:
-                                            log(f"    ✅ 截短结果已稳定（{_wait2}秒）")
-                                            break
-                                    else:
-                                        stable_count = 0
-                                    prev_count = count2
-                                    prev_text_len = text_len2
-                                except:
-                                    pass
-                                await asyncio.sleep(1)
+                            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
 
                             page_links = await get_links_by_text_content_v2(page, var)
                             log(f"    📋 '{var}'扫描: {len(page_links)} 条")
