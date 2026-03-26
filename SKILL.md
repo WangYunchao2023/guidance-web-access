@@ -1,7 +1,7 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.0.2
+version: 3.1.0
 ---
 
 # SKILL.md - Guidance Web Access (v1.7.0)
@@ -44,3 +44,11 @@ version: 3.0.2
 | `web_access.py` | **终极引擎**：集成经验记忆、界面感知、多渠道探索与增量下载。 |
 | `references/user_overrides.yaml` | **记忆库**：存储人工指导的精准 URL 与操作路径。 |
 | `references/site_navigation.yaml` | **路径库**：官方默认导航字典。 |
+| `task_understanding.py` | **任务理解模块**：AI理解任务、生成关键词、制定过滤策略、评估经验匹配。 |
+
+## 🚀 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| v3.1.0 | 2026-03-26 | 新增 TaskUnderstanding 模块（任务理解、关键词生成、过滤策略、AI经验评估） |
+| v3.0.2 | 2026-03-25 | 默认目录 + --save-dir参数支持 |
