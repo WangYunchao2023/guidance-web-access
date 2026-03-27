@@ -1,23 +1,21 @@
-# Git Ignore for web-access skill
+# 会话记录和优化记录
+session-*.md
+优化记录*
+*20260[0-9]*
+*202603[0-9]*
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
+# 临时文件和锁文件
+*.tmp
+*.lock
+.~lock*
+*lock*
+.#*
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# Word/Excel 工作文件
+~$*.docx
+~$*.xlsx
+skill设计.docx
+skill设计.xlsx
 
-# OS
+# macOS
 .DS_Store
-Thumbs.db
-
-# OpenClaw (ignore when tracking skill itself)
-# (If this skill is in a larger repo, adjust accordingly)
