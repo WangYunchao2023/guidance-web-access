@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.0 (2026-03-27)  # 页面稳定性检测升级为多维度版本：同时监控文本+节点+链接三维增量，解决"壳先稳但内容后出"问题
+版本: 3.9.1 (2026-03-27)  # 页面稳定性检测：节点数稳定优先，解决渐进式加载页面的超时问题
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -260,19 +260,20 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
 # ==================== 🧬 模糊语义匹配 ====================
 
 # ================================================================
-# ================================================================
 # 有经验分支：页面稳定性检测（多维度版本）
 # 原理：同时监控文本增量、节点增量、链接增量，三维度同时稳定 quiet_rounds 轮则认为内容区加载完成
 # 优势：避开轮播/广告/时间刷新等"壳先稳、内容后出"的假阳性问题
+# v3.9.1: 节点数稳定优先（替换三维同时稳定），解决渐进式加载页面的超时问题
 # ================================================================
 async def wait_page_stable_exp(page, quiet_rounds=3, check_interval=1, max_rounds=60):
     """
     有经验分支专用页面稳定性检测（多维度版）
     同时监控：文本长度 + 内容节点数 + 链接数
-    三个维度同时稳定 quiet_rounds 轮 → 认为内容区加载完成
+    节点数稳定优先：内容节点出现后（>=5），以节点数稳定为主要信号，
+    quiet_rounds 轮后认为内容区加载完成。
     """
     prev_text_len = 0
-    prev_node_count = 0
+    prev_node_count = -1
     prev_link_count = 0
     stable_rounds = 0
     for _round in range(max_rounds):
@@ -294,22 +295,21 @@ async def wait_page_stable_exp(page, quiet_rounds=3, check_interval=1, max_round
         except:
             break
 
+        has_minimal_content = metrics['node_count'] >= 5
         text_delta = abs(metrics['text_len'] - prev_text_len)
         node_delta = abs(metrics['node_count'] - prev_node_count)
-        link_delta = abs(metrics['link_count'] - prev_link_count)
 
-        text_stable = text_delta < 100
+        # 节点数稳定优先：内容节点出现后(node_count>=5)，节点数稳定(node_delta<3)为主要信号
         node_stable = node_delta < 3
-        link_stable = link_delta < 5
 
-        if text_stable and node_stable and link_stable:
+        if has_minimal_content and node_stable:
             stable_rounds += 1
             if stable_rounds >= quiet_rounds:
                 log(f"    ✅ 内容区已稳定 (文本约{metrics['text_len']}字, 节点约{metrics['node_count']}个, 链接约{metrics['link_count']}个)")
                 return True
         else:
             stable_rounds = 0
-            log(f"    ⏳ 加载中... 文本{prev_text_len}→{metrics['text_len']}(+{text_delta}), 节点{prev_node_count}→{metrics['node_count']}(+{node_delta}), 链接{prev_link_count}→{metrics['link_count']}(+{link_delta})")
+            log(f"    ⏳ 加载中... 文本{prev_text_len}→{metrics['text_len']}(+{text_delta}), 节点{prev_node_count}→{metrics['node_count']}(+{node_delta})")
 
         prev_text_len = metrics['text_len']
         prev_node_count = metrics['node_count']
