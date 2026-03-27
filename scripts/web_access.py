@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.6.1 (2026-03-26)
+版本: 3.7.2 (2026-03-27)
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
-更新:翻译变体由AI助手直接提供(不在脚本内调用LLM),translatable:true时生效
+更新:Cortana全程主导探索
 """
 
 import asyncio, sys, re, os, random, time, subprocess, yaml
@@ -23,31 +23,6 @@ CDE_ENTRY_PAGES = {
 def log(msg): print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
 # ==================== 🛠️ 辅助函数 ====================
-
-def generate_truncated_variants(keyword):
-    """生成关键词截短变体,从长到短逐步简化,用于结果少时降级搜索"""
-    if not keyword or len(keyword) <= 1:
-        return [keyword] if keyword else []
-    variants = []
-    variants.append(keyword)
-    suffixes_to_try = [
-        (r'(?:相关|指南|指导原则|技术指导原则|技术|工艺|方法|研究|评价|申报|注册|生产|制备|质量|控制|标准|规范).*$', ''),
-        (r'(?:产品|制剂|药品|药物).*$', ''),
-        (r'(?:生物|细胞|基因|蛋白|抗体|疫苗|化药|中药|天然产物).*$', ''),
-        (r'(?:临床|非临床|药学|药理|毒理|临床前).*$', ''),
-    ]
-    for pattern, repl in suffixes_to_try:
-        truncated = re.sub(pattern, '', keyword)
-        if truncated and truncated != keyword and truncated not in variants:
-            variants.append(truncated)
-    for i in range(len(keyword) - 1, 1, -1):
-        v = keyword[:i]
-        if v not in variants:
-            variants.append(v)
-    seen = set(); unique = []
-    for v in variants:
-        if v not in seen: seen.add(v); unique.append(v)
-    return unique
 
 # ==================== 🧠 智能化感知与提取 ====================
 
@@ -281,163 +256,18 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
         await asyncio.sleep(5)
     return filled
 
-    """
-    exploration_points: dict{name: {"url": str, "sv": str|None}}
-      sv=None  → 不填搜索框,由 smart_interact 的 date+primary 逻辑决定填什么
-      sv=str   → 用指定字符串填搜索框
-    """
-    all_results = []
-    seen = set()
-    for name, pt in exploration_points.items():
-        url = pt["url"]
-        sv = pt.get("sv")  # None means use date+primary logic in smart_interact
-        log(f"🚀 探索: {name} (sv={repr(sv)})")
-        try:
-            await page.goto(url, wait_until='domcontentloaded')
-            # 等待动态内容加载
-            for _wait in range(15):
-                try:
-                    cnt = await page.evaluate(r'''() => document.querySelectorAll('.news_item, li, tr').length''')
-                    if cnt > 0:
-                        log(f"    ⏳ 等待{_wait+1}秒后检测到内容节点")
-                        break
-                except: pass
-                await asyncio.sleep(1)
-
-            # 填充搜索(sv=None 时 smart_interact 会用 date+primary 逻辑)
-            await smart_interact(page, intent, search_var=sv)
-            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
-
-            page_links = await get_links_by_text_content_v2(page, sv)
-            log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
-            # 调试:打印前5条的日期
-            for dl in page_links[:5]:
-                log(f"       [{dl.get('date','无日期')}] {dl['text'][:60]}")
-            for l in page_links:
-                if l['href'] not in seen:
-                    all_results.append(l); seen.add(l['href'])
-
-            # 结果少时:降级策略
-            if len(all_results) < 5:
-                effective_sv = sv if sv else (intent.get('primary') or intent.get('query', ''))
-                if translatable and effective_sv:
-                    request_translation(effective_sv)
-                    log(f"    💡 翻译变体及后续搜索由 AI 助手接管")
-                elif effective_sv:
-                    # v2.9.0: 首次搜索返回0时，不盲目截短，输出AI报告等我决策
-                    if len(all_results) == 0:
-                        log("=" * 60)
-                        log("🤖 AI_REPORT: 首次搜索(sv={!r})结果为0，需AI决策".format(sv))
-                        log(f"   intent.query: {intent.get('query', '')!r}")
-                        log(f"   intent.primary: {intent.get('primary', '')!r}")
-                        log(f"   建议: 重新调用时使用 --extra-filter <二级关键词> 进行二次过滤，")
-                        log(f"         或使用 --search-var <搜索词> 指定不同的搜索词")
-                        log("=" * 60)
-                    else:
-                        # 结果>0但<5时，尝试截短（保留原逻辑）
-                        variants = generate_truncated_variants(effective_sv)
-                        log(f"    💡 结果仍少({len(all_results)}条),启动截短策略: {variants}")
-                        for var in variants[1:]:
-                            if len(all_results) >= 5:
-                                break
-                            log(f"    🔄 截短重试: '{var}'")
-                            await page.goto(url); await asyncio.sleep(5)
-                            await smart_interact(page, intent, search_var=var)
-                            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
-
-                            page_links = await get_links_by_text_content_v2(page, var)
-                            log(f"    📋 '{var}'扫描: {len(page_links)} 条")
-                            for l in page_links:
-                                if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-                    if len(all_results) >= 5:
-                        log(f"    ✅ 截短成功")
-                elif intent.get('date'):
-                    # 无关键词时,尝试仅用日期
-                    await page.goto(url); await asyncio.sleep(5)
-                    await smart_interact(page, intent, try_date_only=True)
-                    await asyncio.sleep(3)
-                    page_links = await get_links_by_text_content_v2(page, None)
-                    for l in page_links:
-                        if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-
-            # 翻页（增强版）
-            for p_idx in range(2, 6):
-                try:
-                    # 多种选择器检测"下一页"按钮
-                    next_btn = (
-                        await page.query_selector('text="下一页"') or
-                        await page.query_selector('a:has-text("下一页")') or
-                        await page.query_selector('button:has-text("下一页")') or
-                        await page.query_selector('a:has-text(">")') or
-                        await page.query_selector('.layui-laypage-next') or
-                        await page.query_selector('[aria-label="下一页"]')
-                    )
-                    
-                    if not next_btn:
-                        log(f"    📄 第{p_idx-1}页已完成，未找到下一页按钮，停止翻页")
-                        break
-                    
-                    # 检查按钮是否可点击
-                    is_disabled = await next_btn.get_attribute('disabled')
-                    cls = await next_btn.get_attribute('class') or ''
-                    txt = (await next_btn.inner_text()).strip()
-                    
-                    # 判断是否禁用：class包含disabled或aria-disabled，或有disabled属性
-                    if is_disabled is not None or 'layui-disabled' in cls or 'disabled' in cls:
-                        if 'layui-disabled' not in cls:
-                            pass  # 可能只是最后一页
-                        log(f"    📄 第{p_idx-1}页已完成，翻页按钮已禁用，停止翻页")
-                        break
-                    
-                    if not txt:
-                        log(f"    📄 第{p_idx-1}页已完成，按钮无文本，停止翻页")
-                        break
-                    
-                    log(f"    📄 翻到第{p_idx}页...")
-                    await next_btn.click()
-                    
-                    # 稳定性检测：等待新内容加载
-                    prev_count = 0
-                    prev_text_len = 0
-                    stable_count = 0
-                    for _wait in range(15):
-                        await asyncio.sleep(1)
-                        try:
-                            count = await page.evaluate('document.querySelectorAll("a").length')
-                            text_len = await page.evaluate('document.body.innerText.length')
-                            # 新内容已加载（数量变化或内容变化）
-                            if count > 10 and text_len > 500 and count == prev_count and text_len == prev_text_len:
-                                stable_count += 1
-                                if stable_count >= 2:
-                                    log(f"    ✅ 第{p_idx}页已稳定加载")
-                                    break
-                            else:
-                                stable_count = 0
-                            prev_count = count
-                            prev_text_len = text_len
-                        except:
-                            pass
-                    
-                    # 扫描当前页
-                    page_links = await get_links_by_text_content_v2(page, None)
-                    log(f"    📄 第{p_idx}页: 找到 {len(page_links)} 条")
-                    for l in page_links:
-                        if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-                        
-                except Exception as e:
-                    log(f"    ⚠️ 翻页异常: {e}")
-                    break
-        except Exception as e:
-            log(f"⚠️ 探索异常: {e}")
-    return all_results
 
 # ==================== 🧬 模糊语义匹配 ====================
 
-async def explore_with_pagination_v2(page, intent, exploration_points, translatable=False):
+async def explore_with_pagination_v2(page, intent, exploration_points):
     """
+    有经验分支专用探索函数：按 Cortana 制订的完整计划执行，不中途决策。
+    
     exploration_points: dict{name: {"url": str, "sv": str|None}}
-      sv=None  → 不填搜索框,由 smart_interact 的 date+primary 逻辑决定填什么
+      sv=None  → 不填搜索框，由 smart_interact 的 date+primary 逻辑决定填什么
       sv=str   → 用指定字符串填搜索框
+    
+    执行流程：依次执行每个探索点 → 翻页提取 → 合并去重 → 返回所有结果
     """
     all_results = []
     seen = set()
@@ -469,49 +299,6 @@ async def explore_with_pagination_v2(page, intent, exploration_points, translata
             for l in page_links:
                 if l['href'] not in seen:
                     all_results.append(l); seen.add(l['href'])
-
-            # 结果少时:降级策略
-            if len(all_results) < 5:
-                effective_sv = sv if sv else (intent.get('primary') or intent.get('query', ''))
-                if translatable and effective_sv:
-                    request_translation(effective_sv)
-                    log(f"    💡 翻译变体及后续搜索由 AI 助手接管")
-                elif effective_sv:
-                    # v2.9.0: 首次搜索返回0时，不盲目截短，输出AI报告等我决策
-                    if len(all_results) == 0:
-                        log("=" * 60)
-                        log("🤖 AI_REPORT: 首次搜索(sv={!r})结果为0，需AI决策".format(sv))
-                        log(f"   intent.query: {intent.get('query', '')!r}")
-                        log(f"   intent.primary: {intent.get('primary', '')!r}")
-                        log(f"   建议: 重新调用时使用 --extra-filter <二级关键词> 进行二次过滤，")
-                        log(f"         或使用 --search-var <搜索词> 指定不同的搜索词")
-                        log("=" * 60)
-                    else:
-                        # 结果>0但<5时，尝试截短（保留原逻辑）
-                        variants = generate_truncated_variants(effective_sv)
-                        log(f"    💡 结果仍少({len(all_results)}条),启动截短策略: {variants}")
-                        for var in variants[1:]:
-                            if len(all_results) >= 5:
-                                break
-                            log(f"    🔄 截短重试: '{var}'")
-                            await page.goto(url); await asyncio.sleep(5)
-                            await smart_interact(page, intent, search_var=var)
-                            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
-
-                            page_links = await get_links_by_text_content_v2(page, var)
-                            log(f"    📋 '{var}'扫描: {len(page_links)} 条")
-                            for l in page_links:
-                                if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
-                    if len(all_results) >= 5:
-                        log(f"    ✅ 截短成功")
-                elif intent.get('date'):
-                    # 无关键词时,尝试仅用日期
-                    await page.goto(url); await asyncio.sleep(5)
-                    await smart_interact(page, intent, try_date_only=True)
-                    await asyncio.sleep(3)
-                    page_links = await get_links_by_text_content_v2(page, None)
-                    for l in page_links:
-                        if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
 
             # 翻页（增强版）
             for p_idx in range(2, 6):
@@ -729,7 +516,7 @@ async def cortana_execute_flow(cortana_plan):
         }
         
         # 执行探索
-        raw_list = await explore_with_pagination_v2(page, intent_for_explore, pts, translatable=False)
+        raw_list = await explore_with_pagination_v2(page, intent_for_explore, pts)
         
         # Cortana 模式下，只用 filter_criteria 过滤
         final_list = raw_list
@@ -845,6 +632,360 @@ def deduplicate_results(existing, new_results):
             added += 1
     return merged, added
 
+
+
+# ==================== 🚀 无经验分支：Cortana 全程感知探索引擎 ====================
+# 完全独立于有经验分支
+# 核心理念：感知 → Cortana决策 → 执行，循环往复直至找全
+
+# ---------- 页面感知 ----------
+async def perceive_current_page(page):
+    """感知当前页面结构，返回所有可用信息"""
+    try:
+        page_info = await page.evaluate(r'''
+            () => {
+                const result = {
+                    'url': window.location.href,
+                    'title': document.title || '',
+                    'search_inputs': [],
+                    'nav_links': [],
+                    'content_links': [],
+                    'content_count': 0,
+                    'text_length': 0
+                };
+                const inputSelectors = [
+                    'input[type="text"]', 'input[placeholder*="搜索"]',
+                    'input[placeholder*="keyword"]', 'input[placeholder*="查询"]',
+                    'input[name*="keyword"]', 'input[name*="search"]'
+                ];
+                const urlSet = new Set();
+                for (const sel of inputSelectors) {
+                    const inputs = document.querySelectorAll(sel);
+                    inputs.forEach(inp => {
+                        if (inp.offsetWidth > 0) {
+                            result.search_inputs.push({
+                                'selector': inp.id ? '#'+inp.id : inp.name ? '[name="'+inp.name+'"]' : inp.placeholder ? '[placeholder="'+inp.placeholder+'"]' : sel,
+                                'placeholder': inp.placeholder || inp.name || inp.id || 'text input'
+                            });
+                        }
+                    });
+                }
+                const navSelectors = ['nav a', '.nav a', '.menu a', '.sidebar a', 'header a', '.left-nav a', '.guide-nav a'];
+                for (const sel of navSelectors) {
+                    const links = document.querySelectorAll(sel);
+                    links.forEach(link => {
+                        if (link.href && link.innerText.trim().length > 0 && !urlSet.has(link.href)) {
+                            urlSet.add(link.href);
+                            result.nav_links.push({
+                                'name': link.innerText.trim().substring(0, 60),
+                                'url': link.href
+                            });
+                        }
+                    });
+                }
+                const allLinks = document.querySelectorAll('a[href]');
+                const exclude = ['javascript', 'login', 'register', 'logout', 'copyright'];
+                let count = 0;
+                allLinks.forEach(link => {
+                    if (count >= 200) return;
+                    const href = link.href || '';
+                    const text = (link.innerText || '').trim();
+                    if (!href || text.length < 3) return;
+                    if (exclude.some(p => href.toLowerCase().includes(p))) return;
+                    if (href.startsWith('http') && !urlSet.has(href)) {
+                        urlSet.add(href);
+                        result.content_links.push({'name': text.substring(0, 80), 'url': href});
+                        count++;
+                    }
+                });
+                result.content_count = document.querySelectorAll('.news_item, li, tr, .article-item, .list-item').length;
+                result.text_length = (document.body.innerText || '').length;
+                return result;
+            }
+        ''')
+        log("    📡 感知: url={}".format(page_info['url']))
+        log("    📡 感知: 标题={}".format(page_info['title'][:50]))
+        log("    📡 感知: 搜索框{}个, 内容链接{}个".format(len(page_info['search_inputs']), len(page_info['content_links'])))
+        log("    📡 感知: 内容节点约{}个".format(page_info['content_count']))
+        return page_info
+    except Exception as e:
+        log("    ⚠️ 感知异常: {}".format(e))
+        return {'url': page.url, 'title': '', 'search_inputs': [], 'nav_links': [], 'content_links': [], 'content_count': 0, 'text_length': 0}
+
+
+# ---------- 等待动态内容稳定 ----------
+async def wait_for_content_ready(page, timeout=15):
+    """等待页面动态内容加载完成（稳定性检测）"""
+    prev_count = 0
+    prev_text_len = 0
+    stable_count = 0
+    for _wait in range(timeout):
+        await asyncio.sleep(1)
+        try:
+            count = await page.evaluate('document.querySelectorAll(".news_item, li, tr, .article-item, .list-item").length')
+            text_len = await page.evaluate('document.body.innerText.length')
+            if count > 0 and text_len > 500:
+                if count == prev_count and text_len == prev_text_len:
+                    stable_count += 1
+                    if stable_count >= 2:
+                        log("    ⏳ 页面内容已稳定(节点{}, 文本{}字)".format(count, text_len))
+                        return True
+                else:
+                    stable_count = 0
+            prev_count = count
+            prev_text_len = text_len
+        except:
+            pass
+    log("    ⚠️ 等待内容稳定超时({}秒)，继续执行".format(timeout))
+    return False
+
+
+# ---------- 多重过滤 ----------
+def apply_filters(results, filter_criteria, date_enabled=False, date_value=None):
+    """多重过滤：关键词AND匹配 + 噪音过滤 + 日期过滤（仅当任务明确指定日期时）"""
+    if not results:
+        return results
+    filtered = results
+    # 关键词过滤（所有 filter_criteria 词都要出现）
+    if filter_criteria:
+        before = len(filtered)
+        filtered = [r for r in filtered if all(
+            q in (r.get('text', '') + r.get('full_row', ''))
+            for q in filter_criteria
+        )]
+        log("    🔍 关键词过滤 {}: {} -> {} 条".format(filter_criteria, before, len(filtered)))
+    # 噪音过滤
+    if filtered:
+        noise = ['党建', '获奖', '招聘', '版权', 'copyright', '注册', '登录']
+        before = len(filtered)
+        filtered = [r for r in filtered if not any(np in (r.get('text', '') + r.get('full_row', '')) for np in noise)]
+        if len(filtered) < before:
+            log("    🔇 噪音过滤: {} -> {} 条".format(before, len(filtered)))
+    # 日期过滤（仅当任务明确指定日期时生效）
+    if date_enabled and date_value and filtered:
+        before = len(filtered)
+        dv = date_value.replace('-', '.').replace('/', '.')
+        filtered = [r for r in filtered if dv in (r.get('date', '') + r.get('text', '') + r.get('full_row', '')).replace(' ', '')]
+        log("    📅 日期过滤 {}: {} -> {} 条".format(date_value, before, len(filtered)))
+    return filtered
+
+
+# ---------- 探索分支主逻辑 ----------
+async def explore_branch(page, url, depth, state, intent, filter_criteria, date_enabled, date_value):
+    """
+    探索一个分支：跳转 → 感知 → 输出AI_REPORT供Cortana决策
+    
+    state: {
+        'visited_urls': set,
+        'search_history': list,
+        'all_results': list,
+        'pending_candidates': list
+    }
+    """
+    if depth > 5:
+        log("    ⚠️ 超过最大深度限制({})，停止深入".format(depth))
+        return []
+    if not url or url in state['visited_urls']:
+        return []
+
+    log("\n{}".format("="*60))
+    log("🔍 探索 [{}] (depth={})".format(url[:80], depth))
+    log("{}".format("="*60))
+    state['visited_urls'].add(url)
+
+    try:
+        await page.goto(url, wait_until='domcontentloaded')
+    except Exception as e:
+        log("    ⚠️ 跳转失败: {}".format(e))
+        return []
+
+    await wait_for_content_ready(page)
+    page_info = await perceive_current_page(page)
+
+    # 相似搜索检测
+    similar = None
+    primary = intent.get('primary', '')
+    if primary:
+        for hist in state['search_history']:
+            if hist.get('sv') == primary:
+                similar = hist
+                break
+
+    # AI_REPORT - 供 Cortana 分析并传入下一步决策
+    log("\n{}".format("="*60))
+    log("🤖 AI_REPORT: 页面感知完成，等待Cortana决策")
+    log("   page_url: {}".format(page_info['url'][:80]))
+    log("   page_title: {}".format(page_info.get('title', '')[:60]))
+    log("   search_inputs: {} 个".format(len(page_info.get('search_inputs', []))))
+    log("   nav_links: {} 个".format(len(page_info.get('nav_links', []))))
+    log("   content_links: {} 个".format(len(page_info.get('content_links', []))))
+    for lk in page_info.get('nav_links', [])[:8]:
+        log("      [NAV] {} -> {}".format(lk['name'][:30], lk['url'][:60]))
+    for lk in page_info.get('content_links', [])[:8]:
+        log("      [LINK] {} -> {}".format(lk['name'][:40], lk['url'][:60]))
+    log("   已探索URL: {} 个".format(len(state['visited_urls'])))
+    log("   已搜索: {} 次".format(len(state['search_history'])))
+    log("   当前结果: {} 条".format(len(state['all_results'])))
+    log("   intent.query: {!r}".format(intent.get('query', '')))
+    log("   intent.primary: {!r}".format(intent.get('primary', '')))
+    log("   filter_criteria: {}".format(filter_criteria))
+    log("   date_filter: {} (enabled={})".format(date_value, date_enabled))
+    log("   similar_search: {}".format('是 - "'+similar['sv']+'"' if similar else '否'))
+    log("{}".format("="*60))
+    log("💡 Cortana分析以上感知结果后，传入下一步决策参数:")
+    log("   next_action: 'search'|'click'|'return_home'|'stop'")
+    log("   sv: '搜索词' (search时)")
+    log("   target_url: 'URL' (click时)")
+    log("   candidates: [{name,url,relevance}] (下步待探索链接)")
+    log("   filter_criteria_override: [] (可选)")
+    log("{}".format("="*60))
+
+    return []
+
+
+# ---------- cortana_auto_flow ----------
+async def cortana_auto_flow(cortana_plan):
+    """
+    无经验分支主入口：Cortana 全程感知 + 决策探索
+
+    cortana_plan 格式:
+    {
+        "task": "任务描述",
+        "base_url": "起始URL（必填）",
+        "filter_criteria": ["词1", "词2"],        // 可选，全局过滤
+        "date_filter": "2025-03-09",               // 可选，仅任务明确指定日期时填
+        "intent": {
+            "query": "完整任务描述",
+            "primary": "核心搜索词",               // 可选
+            "date": "日期描述",                    // 可选
+            "original": "原始任务"
+        },
+        "initial_candidates": [                     // 可选，Cortana感知首页后认为高相关的链接
+            {"name": "链接名", "url": "https://...", "relevance": "high|medium|low"}
+        ],
+        "save_dir": "~/Documents/...",             // 可选
+        "download_enabled": true                   // 任务是否要求下载
+    }
+
+    执行流程（每步都感知 → Cortana决策 → 执行）:
+        1. 打开首页 → 感知
+        2. Cortana 分析感知结果 → 决策
+        3. 按决策执行（点击链接 / 搜索 / 返回）
+        4. 每步都感知 → Cortana决策 → 执行（循环）
+        5. 直到所有分支遍历完毕
+        6. 汇总所有结果 → 多重过滤
+        7. 根据 download_enabled 决定是否下载
+    """
+    log("🎯 Cortana 全程感知探索: {}".format(cortana_plan.get('task', '')))
+
+    base_url = cortana_plan.get('base_url')
+    filter_criteria = cortana_plan.get('filter_criteria', [])
+    date_filter = cortana_plan.get('date_filter')
+    date_enabled = date_filter is not None
+    intent = cortana_plan.get('intent', {})
+    save_dir = cortana_plan.get('save_dir')
+    download_enabled = cortana_plan.get('download_enabled', False)
+    initial_candidates = cortana_plan.get('initial_candidates', [])
+
+    if not base_url:
+        log("❌ cortana_auto_flow 需要 base_url 参数")
+        return
+
+    log("📌 base_url: {}".format(base_url))
+    log("📌 filter_criteria: {}".format(filter_criteria))
+    log("📌 date_filter: {} (enabled={})".format(date_filter, date_enabled))
+    log("📌 download_enabled: {}".format(download_enabled))
+    log("📌 initial_candidates: {} 个".format(len(initial_candidates)))
+
+    # 探索状态（纯内存，过程结束后自动销毁）
+    state = {
+        'visited_urls': set(),
+        'search_history': [],
+        'all_results': [],
+        'pending_candidates': []
+    }
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
+        page = await browser.new_page()
+        await page.add_init_script('''() => {
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            delete navigator.__proto__.webdriver;
+        }''')
+
+        # Step 1: 打开首页 → 感知
+        log("\n🚀 打开首页...")
+        await page.goto(base_url, wait_until='domcontentloaded')
+        await wait_for_content_ready(page)
+        home_info = await perceive_current_page(page)
+        state['visited_urls'].add(home_info['url'])
+
+        # 首页 AI_REPORT
+        log("\n{}".format("="*60))
+        log("🤖 AI_REPORT: 首页感知完成，等待Cortana决策")
+        log("   page_title: {}".format(home_info.get('title', '')[:60]))
+        log("   search_inputs: {} 个".format(len(home_info.get('search_inputs', []))))
+        nav_list = home_info.get('nav_links', [])
+        content_list = home_info.get('content_links', [])
+        log("   nav_links: {} 个".format(len(nav_list)))
+        for lk in nav_list[:10]:
+            log("      - {} -> {}".format(lk['name'][:30], lk['url'][:60]))
+        log("   content_links: {} 个".format(len(content_list)))
+        for lk in content_list[:10]:
+            log("      - {} -> {}".format(lk['name'][:40], lk['url'][:60]))
+        log("   intent.query: {!r}".format(intent.get('query', '')))
+        log("   intent.primary: {!r}".format(intent.get('primary', '')))
+        log("   filter_criteria: {}".format(filter_criteria))
+        log("   date_filter: {} (enabled={})".format(date_filter, date_enabled))
+        log("{}".format("="*60))
+        log("💡 Cortana请分析以上首页感知结果，决策下一步:")
+        log("   - 是否使用搜索框搜索？")
+        log("   - 点击哪些链接深入探索？")
+        log("   - initial_candidates中的链接是否都高相关？")
+        log("   请传入: next_action, sv, candidates 等决策参数")
+        log("{}".format("="*60))
+
+        # Step 2: 探索 initial_candidates
+        if initial_candidates:
+            sorted_cands = sorted(initial_candidates,
+                key=lambda x: {'high': 0, 'medium': 1, 'low': 2}.get(x.get('relevance', 'medium'), 1))
+            for cand in sorted_cands:
+                if not cand.get('url') or cand['url'] in state['visited_urls']:
+                    continue
+                results = await explore_branch(
+                    page, cand['url'], depth=1,
+                    state=state, intent=intent,
+                    filter_criteria=filter_criteria,
+                    date_enabled=date_enabled,
+                    date_value=date_filter
+                )
+                state['all_results'].extend(results)
+
+        # Step 3: 汇总
+        log("\n{}".format("="*60))
+        log("📊 探索汇总:")
+        log("   已探索URL数: {}".format(len(state['visited_urls'])))
+        log("   已搜索次数: {}".format(len(state['search_history'])))
+        log("   找到结果总数: {}".format(len(state['all_results'])))
+        log("{}".format("="*60))
+
+        # Step 4: 多重过滤
+        if state['all_results']:
+            filtered = apply_filters(state['all_results'], filter_criteria, date_enabled, date_filter)
+            log("   多重过滤后: {} 条".format(len(filtered)))
+            if filtered and download_enabled:
+                log("📋 开始下载 {} 个文件...".format(len(filtered)))
+                downloaded = await final_download(page, filtered,
+                    cortana_plan.get('task', ''), custom_save_dir=save_dir)
+                log("🎉 任务完成: 共下载 {} 个文件".format(downloaded))
+            elif filtered:
+                log("📋 任务为查找类，不执行下载，共找到 {} 条相关结果".format(len(filtered)))
+            else:
+                log("❌ 多重过滤后无匹配结果")
+        else:
+            log("❌ 未找到任何匹配结果")
+
+        await browser.close()
 
 
 async def cortana_perception_flow(cortana_plan):
@@ -983,8 +1124,8 @@ async def cortana_perception_flow(cortana_plan):
 if __name__ == "__main__":
     import json
     
-    # Cortana 主导模式
     cortana_plan_arg = None
+    auto_flow_arg = None
     perception_arg = None
     args = sys.argv[1:]
     i = 0
@@ -993,19 +1134,31 @@ if __name__ == "__main__":
         if arg == '--cortana-plan' and i + 1 < len(args):
             cortana_plan_arg = args[i + 1]
             i += 2
+        elif arg == '--auto-flow' and i + 1 < len(args):
+            auto_flow_arg = args[i + 1]
+            i += 2
         elif arg == '--perception' and i + 1 < len(args):
             perception_arg = args[i + 1]
             i += 2
         else:
             i += 1
-    
+
     if cortana_plan_arg:
+        # 有经验分支
         try:
             plan = json.loads(cortana_plan_arg)
             asyncio.run(cortana_execute_flow(plan))
         except json.JSONDecodeError:
             print("❌ Cortana计划 JSON 格式错误")
+    elif auto_flow_arg:
+        # 无经验分支：多策略自动探索
+        try:
+            plan = json.loads(auto_flow_arg)
+            asyncio.run(cortana_auto_flow(plan))
+        except json.JSONDecodeError:
+            print("❌ 多策略计划 JSON 格式错误")
     elif perception_arg:
+        # 无经验分支：感知式探索（交互式）
         try:
             plan = json.loads(perception_arg)
             asyncio.run(cortana_perception_flow(plan))
@@ -1013,12 +1166,13 @@ if __name__ == "__main__":
             print("❌ 自感知计划 JSON 格式错误")
     else:
         print("用法:")
-        print("  python web_access.py --cortana-plan '<JSON执行计划>'")
-        print("  python web_access.py --perception '<JSON感知计划>'")
+        print("  python web_access.py --cortana-plan '<JSON执行计划>'    # 有经验分支")
+        print("  python web_access.py --auto-flow '<JSON多策略计划>'     # 无经验分支")
+        print("  python web_access.py --perception '<JSON感知计划>'      # 无经验分支（感知式）")
         print("")
         print("示例（有经验-url已知）:")
         print("  --cortana-plan '{\"task\":\"下载沟通交流指导原则\",\"search_url\":\"https://www.cde.org.cn/zdyz/fullsearchpage\",\"search_var\":\"沟通交流\"}'")
         print("")
-        print("示例（无经验-自感知探索）:")
-        print("  --perception '{\"task\":\"下载某类指导原则\",\"base_url\":\"https://www.cde.org.cn\",\"search_var\":\"某关键词\"}'")
+        print("示例（无经验-多策略找全）:")
+        print("  --auto-flow '{\"task\":\"下载某类指导原则\",\"strategies\":[{\"name\":\"策略1\",\"url\":\"https://...\",\"sv\":\"词1\",\"filter_criteria\":[\"词1\"]}],\"save_dir\":\"~/...\"}'")
     print("\n✅ 完成")

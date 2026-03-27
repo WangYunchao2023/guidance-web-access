@@ -1,10 +1,10 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.6.1
+version: 3.7.2
 ---
 
-# SKILL.md - Guidance Web Access (v3.2.0)
+# SKILL.md - Guidance Web Access (v3.6.1)
 
 ## 🌟 核心理念
 - **Cortana 先理解 (Cortana First)**：接到任务后，Cortana 先进行任务分析，制定执行策略，再协调执行。
@@ -99,11 +99,29 @@ Cortana 分析后输出标准格式报告：
 2. **命中**：直接打开 `target_url` 或 `search_url`。
 3. **未命中**：按 [首页] -> [发布通告] -> [业务专栏] 进行地毯式探测。
 
-### 2. 界面感知与动作 (Sensing)
+### 2. 无经验分支：多策略找全（Cortana 全程主导）
+1. Cortana 接到任务后，制定**多策略序列**（不等同于有经验分支的搜索词截短降级）。
+2. 每个策略包含：`{name, url, sv, filter_criteria, intent}`。
+3. 依次执行每个策略，**每个策略独立翻页提取 + 过滤**。
+4. 策略间结果**合并去重**。
+5. 任意策略首次扫描 < 5 条 → 输出 AI_REPORT，**等待 Cortana 决策**，不机械截短。
+6. Cortana 决策后继续执行或结束。
+
+**多策略找全示例**：
+```
+Cortana 策略序列：
+  策略1: url=搜索页, sv="中药注射剂", 过滤=["中药","注射剂"]
+  策略2: url=搜索页, sv="中药", 过滤=["注射剂"]
+  策略3: url=列表页, sv=None, 过滤=["中药注射剂"]
+
+执行顺序：策略1 → 策略2 → 策略3 → 合并去重 → 下载
+```
+
+### 3. 界面感知与动作 (Sensing)
 - **输入识别**：自动定位 `keyword`、`title`、`start_date`、`end_date` 等输入框。
 - **多字段检索**：在搜索页同时填充"日期范围"与"关键词"，实现一键精准过滤。
 
-### 3. 语义过滤 (Semantic Filter)
+### 4. 语义过滤 (Semantic Filter)
 - **强匹配**：只有与任务日期（YYYY-MM-DD）完全一致的内容才会被保留下载。
 - **噪音排除**：自动过滤党建、获奖、招聘等与研发无关的行政通告。
 
@@ -119,15 +137,25 @@ Cortana 分析后输出标准格式报告：
 
 ## 🛠️ 脚本结构
 
-| 脚本 | 核心功能 |
-|------|----------|
-| `web_access.py` | **终极引擎**：集成经验记忆、界面感知、多渠道探索与增量下载。 |
-| `references/user_overrides.yaml` | **经验库**：存储人工指导的任务模式匹配规则。 |
+| 函数 | 所属分支 | 核心功能 |
+|------|----------|----------|
+| `cortana_execute_flow()` | 有经验分支 | 有经验引导的精准执行入口 |
+| `explore_with_pagination_v2()` | 有经验分支 | 有经验分支专用探索引擎 |
+| `cortana_auto_flow()` | 无经验分支 | **无经验分支主入口**：Cortana 全程感知 → 决策 → 执行，循环找全 |
+| `perceive_current_page()` | 无经验分支 | 感知当前页面结构（导航/搜索框/链接/内容节点） |
+| `wait_for_content_ready()` | 无经验分支 | 等待动态内容加载完成（稳定性检测） |
+| `apply_filters()` | 无经验分支 | 多重过滤：关键词AND匹配 + 噪音过滤 + 日期过滤（仅当任务明确指定日期时生效） |
+| `explore_branch()` | 无经验分支 | 探索分支主逻辑：跳转 → 感知 → 输出AI_REPORT供Cortana决策 |
+| `cortana_perception_flow()` | 无经验分支 | 感知式探索入口（交互式探索，可选） |
+| `references/user_overrides.yaml` | 有经验分支 | **经验库**：存储人工指导的任务模式匹配规则 |
 
 ## 🚀 版本历史
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.7.2 | 2026-03-27 | 有经验分支修正：删除explore_with_pagination_v2中的AI_REPORT决策点；Cortana生成完整策略后引擎一次性执行到底，无需中途决策；清理嵌入无用代码；版本号统一升至v3.7.2 |
+| v3.7.1 | 2026-03-27 | 无经验分支重构：实现Cortana全程感知→决策→执行循环；新增perceive_current_page/wait_for_content_ready/apply_filters/explore_branch；Cortana每次感知后输出AI_REPORT决策；多重过滤（日期仅任务指定时生效）；删除generate_truncated_variants |
+| v3.7.0 | 2026-03-27 | 无经验分支实现完整多策略找全机制：cortana_auto_flow() + explore_with_pagination_noexp()，两分支完全隔离；移除机械截短逻辑，统一Cortana决策点 |
 | v3.6.1 | 2026-03-26 | 无经验分支新增：去重机制、自动翻页、关键词搜索框智能匹配、结果过滤 |
 | v3.6.0 | 2026-03-26 | 新增cortana_auto_flow()：无经验自感知自动探索入口，支持search/navigate/mixed三种策略 |
 | v3.5.0 | 2026-03-26 | 新增 cortana_perception_flow()：Cortana自感知页面结构的探索入口 |
