@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.7.2 (2026-03-27)
+版本: 3.8.0 (2026-03-27)  # 统一页面稳定性检测：两个分支各自独立使用 wait_page_stable（文本增量静默期方案）
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -259,6 +259,41 @@ async def smart_interact(page, intent, try_date_only=False, search_var=None, sea
 
 # ==================== 🧬 模糊语义匹配 ====================
 
+# ================================================================
+# 有经验分支：页面稳定性检测
+# 原理：持续监控页面文本总量，变化率持续低于阈值则认为稳定
+# ================================================================
+async def wait_page_stable_exp(page, quiet_rounds=3, check_interval=1, max_rounds=60):
+    """
+    有经验分支专用页面稳定性检测
+    原理：持续监控页面 innerText 总量，安静 quiet_rounds 轮则认为稳定
+    适用：搜索结果页、层级导航列表页、翻页后加载
+    """
+    prev_text_len = 0
+    stable_rounds = 0
+    for _round in range(max_rounds):
+        await asyncio.sleep(check_interval)
+        try:
+            text_len = await page.evaluate(r"() => (document.body.innerText || '').length")
+        except:
+            break
+        change = abs(text_len - prev_text_len)
+        if change > 50:
+            stable_rounds = 0
+            log(f"    ⏳ 页面加载中... (第{_round+1}轮, 文本约{text_len}字, 变化+{change})")
+        else:
+            stable_rounds += 1
+            if stable_rounds >= quiet_rounds:
+                log(f"    ✅ 页面已稳定 (文本约{text_len}字, 连续{stable_rounds}轮变化<50字)")
+                return True
+        prev_text_len = text_len
+    log(f"    ⚠️ 页面稳定性等待超时({max_rounds}轮)，强制继续")
+    return False
+
+
+# ================================================================
+# 有经验分支：探索函数
+# ================================================================
 async def explore_with_pagination_v2(page, intent, exploration_points):
     """
     有经验分支专用探索函数：按 Cortana 制订的完整计划执行，不中途决策。
@@ -277,19 +312,11 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
         log(f"🚀 探索: {name} (sv={repr(sv)})")
         try:
             await page.goto(url, wait_until='domcontentloaded')
-            # 等待动态内容加载
-            for _wait in range(15):
-                try:
-                    cnt = await page.evaluate(r'''() => document.querySelectorAll('.news_item, li, tr').length''')
-                    if cnt > 0:
-                        log(f"    ⏳ 等待{_wait+1}秒后检测到内容节点")
-                        break
-                except: pass
-                await asyncio.sleep(1)
+            await wait_page_stable_exp(page)
 
             # 填充搜索(sv=None 时 smart_interact 会用 date+primary 逻辑)
             await smart_interact(page, intent, search_var=sv)
-            await asyncio.sleep(15)  # v2.8.1: AJAX结果加载需要更长时间
+            await wait_page_stable_exp(page)
 
             page_links = await get_links_by_text_content_v2(page, sv)
             log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
@@ -335,28 +362,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
                     
                     log(f"    📄 翻到第{p_idx}页...")
                     await next_btn.click()
-                    
-                    # 稳定性检测：等待新内容加载
-                    prev_count = 0
-                    prev_text_len = 0
-                    stable_count = 0
-                    for _wait in range(15):
-                        await asyncio.sleep(1)
-                        try:
-                            count = await page.evaluate('document.querySelectorAll("a").length')
-                            text_len = await page.evaluate('document.body.innerText.length')
-                            # 新内容已加载（数量变化或内容变化）
-                            if count > 10 and text_len > 500 and count == prev_count and text_len == prev_text_len:
-                                stable_count += 1
-                                if stable_count >= 2:
-                                    log(f"    ✅ 第{p_idx}页已稳定加载")
-                                    break
-                            else:
-                                stable_count = 0
-                            prev_count = count
-                            prev_text_len = text_len
-                        except:
-                            pass
+                    await wait_page_stable_exp(page)
                     
                     # 扫描当前页
                     page_links = await get_links_by_text_content_v2(page, None)
@@ -713,31 +719,42 @@ async def perceive_current_page(page):
         return {'url': page.url, 'title': '', 'search_inputs': [], 'nav_links': [], 'content_links': [], 'content_count': 0, 'text_length': 0}
 
 
-# ---------- 等待动态内容稳定 ----------
-async def wait_for_content_ready(page, timeout=15):
-    """等待页面动态内容加载完成（稳定性检测）"""
-    prev_count = 0
+# ================================================================
+# 无经验分支：页面稳定性检测
+# 原理：持续监控页面 innerText 总量，变化率持续低于阈值则认为稳定
+# ================================================================
+async def wait_page_stable_noexp(page, quiet_rounds=3, check_interval=1, max_rounds=60):
+    """
+    无经验分支专用页面稳定性检测
+    原理：持续监控页面 innerText 总量，安静 quiet_rounds 轮则认为稳定
+    适用：搜索结果页、层级导航列表页、翻页后加载
+    """
     prev_text_len = 0
-    stable_count = 0
-    for _wait in range(timeout):
-        await asyncio.sleep(1)
+    stable_rounds = 0
+    for _round in range(max_rounds):
+        await asyncio.sleep(check_interval)
         try:
-            count = await page.evaluate('document.querySelectorAll(".news_item, li, tr, .article-item, .list-item").length')
-            text_len = await page.evaluate('document.body.innerText.length')
-            if count > 0 and text_len > 500:
-                if count == prev_count and text_len == prev_text_len:
-                    stable_count += 1
-                    if stable_count >= 2:
-                        log("    ⏳ 页面内容已稳定(节点{}, 文本{}字)".format(count, text_len))
-                        return True
-                else:
-                    stable_count = 0
-            prev_count = count
-            prev_text_len = text_len
+            text_len = await page.evaluate(r"() => (document.body.innerText || '').length")
         except:
-            pass
-    log("    ⚠️ 等待内容稳定超时({}秒)，继续执行".format(timeout))
+            break
+        change = abs(text_len - prev_text_len)
+        if change > 50:
+            stable_rounds = 0
+            log(f"    ⏳ 页面加载中... (第{_round+1}轮, 文本约{text_len}字, 变化+{change})")
+        else:
+            stable_rounds += 1
+            if stable_rounds >= quiet_rounds:
+                log(f"    ✅ 页面已稳定 (文本约{text_len}字, 连续{stable_rounds}轮变化<50字)")
+                return True
+        prev_text_len = text_len
+    log(f"    ⚠️ 页面稳定性等待超时({max_rounds}轮)，强制继续")
     return False
+
+
+# ---------- 等待动态内容稳定（已废弃，仅保留签名兼容） ----------
+async def wait_for_content_ready(page, timeout=15):
+    """⚠️ 已废弃，请使用 wait_page_stable_noexp"""
+    return await wait_page_stable_noexp(page, quiet_rounds=3, max_rounds=timeout)
 
 
 # ---------- 多重过滤 ----------
@@ -799,7 +816,7 @@ async def explore_branch(page, url, depth, state, intent, filter_criteria, date_
         log("    ⚠️ 跳转失败: {}".format(e))
         return []
 
-    await wait_for_content_ready(page)
+    await wait_page_stable_noexp(page)
     page_info = await perceive_current_page(page)
 
     # 相似搜索检测
@@ -916,7 +933,7 @@ async def cortana_auto_flow(cortana_plan):
         # Step 1: 打开首页 → 感知
         log("\n🚀 打开首页...")
         await page.goto(base_url, wait_until='domcontentloaded')
-        await wait_for_content_ready(page)
+        await wait_page_stable_noexp(page)
         home_info = await perceive_current_page(page)
         state['visited_urls'].add(home_info['url'])
 
