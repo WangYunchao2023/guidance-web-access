@@ -1,10 +1,21 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.9.1
+version: 3.9.0
 ---
 
-# SKILL.md - Guidance Web Access (v3.6.1)
+# SKILL.md - Guidance Web Access (v3.9.0)
+
+## ⚠️ 执行前提
+
+执行脚本前，必须设置显示凭证环境变量（否则浏览器无法打开）：
+
+```bash
+export DISPLAY=:0
+export XAUTHORITY=/run/user/1000/gdm/Xauthority
+```
+
+> **注意**：如果在 OpenClaw 后台会话中执行脚本但浏览器打不开，通常是丢失了 DISPLAY 和 XAUTHORITY 凭证，加上这两行即可。
 
 ## 🌟 核心理念
 - **Cortana 先理解 (Cortana First)**：接到任务后，Cortana 先进行任务分析，制定执行策略，再协调执行。
