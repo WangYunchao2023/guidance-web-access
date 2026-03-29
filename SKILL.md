@@ -1,7 +1,7 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.9.0
+version: 3.8.0
 ---
 
 # SKILL.md - Guidance Web Access (v3.6.1)
@@ -164,8 +164,8 @@ Cortana 策略序列：
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
-| v3.9.0 | 2026-03-27 | 页面稳定性检测升级为多维度版本：同时监控文本+节点+链接三维增量，解决"壳先稳但内容后出"的假阳性问题；两分支各自独立实现 |
 | v3.8.0 | 2026-03-27 | 统一页面稳定性检测：两个分支各自独立使用 `wait_page_stable`（文本增量静默期方案），替换旧的选择器计数 + 固定 sleep 逻辑 |
+| v3.7.2 | 2026-03-27 | 有经验分支修正：删除explore_with_pagination_v2中的AI_REPORT决策点；Cortana生成完整策略后引擎一次性执行到底，无需中途决策；清理嵌入无用代码；版本号统一升至v3.7.2 |
 | v3.7.1 | 2026-03-27 | 无经验分支重构：实现Cortana全程感知→决策→执行循环；新增perceive_current_page/wait_for_content_ready/apply_filters/explore_branch；Cortana每次感知后输出AI_REPORT决策；多重过滤（日期仅任务指定时生效）；删除generate_truncated_variants |
 | v3.7.0 | 2026-03-27 | 无经验分支实现完整多策略找全机制：cortana_auto_flow() + explore_with_pagination_noexp()，两分支完全隔离；移除机械截短逻辑，统一Cortana决策点 |
 | v3.6.1 | 2026-03-26 | 无经验分支新增：去重机制、自动翻页、关键词搜索框智能匹配、结果过滤 |
