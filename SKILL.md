@@ -6,6 +6,17 @@ version: 3.9.1
 
 # SKILL.md - Guidance Web Access (v3.6.1)
 
+## ⚠️ 执行前提
+
+执行脚本前，必须设置显示凭证环境变量（否则浏览器无法打开）：
+
+```bash
+export DISPLAY=:0
+export XAUTHORITY=/run/user/1000/gdm/Xauthority
+```
+
+> **注意**：如果在 OpenClaw 后台会话中执行脚本但浏览器打不开，通常是丢失了 DISPLAY 和 XAUTHORITY 凭证，加上这两行即可。
+
 ## 🌟 核心理念
 - **Cortana 先理解 (Cortana First)**：接到任务后，Cortana 先进行任务分析，制定执行策略，再协调执行。
 - **经验优先 (Experience First)**：系统会优先检索 `user_overrides.yaml`。若匹配任务关键词，将放弃默认路径，直奔"人工经验"锁定的高价值 URL。
