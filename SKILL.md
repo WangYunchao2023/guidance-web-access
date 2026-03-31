@@ -1,10 +1,10 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.9.0
+version: 3.9.3
 ---
 
-# SKILL.md - Guidance Web Access (v3.9.0)
+# SKILL.md - Guidance Web Access (v3.9.2)
 
 ## ⚠️ 执行前提
 
@@ -164,6 +164,7 @@ Cortana 策略序列：
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.9.3 | 2026-03-31 | 修复超时后首次交互失败的问题：在超时后等待页面加载完成后重试 `smart_interact` |
 | v3.9.1 | 2026-03-27 | 有经验分支 `wait_page_stable_exp`：节点数稳定优先（替换三维同时稳定），解决渐进式加载页面的超时问题 |
 | v3.9.0 | 2026-03-27 | 页面稳定性检测升级为多维度版本：同时监控文本+节点+链接三维增量，解决"壳先稳但内容后出"的假阳性问题；两分支各自独立实现 |
 | v3.7.1 | 2026-03-27 | 无经验分支重构：实现Cortana全程感知→决策→执行循环；新增perceive_current_page/wait_for_content_ready/apply_filters/explore_branch；Cortana每次感知后输出AI_REPORT决策；多重过滤（日期仅任务指定时生效）；删除generate_truncated_variants |

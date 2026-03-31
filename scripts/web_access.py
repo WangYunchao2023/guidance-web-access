@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.0 (2026-03-27)  # 页面稳定性检测升级为多维度版本：同时监控文本+节点+链接三维增量，解决"壳先稳但内容后出"问题
+版本: 3.9.3 (2026-03-31)  # 修复超时后首次交互失败的问题：在超时后等待页面加载完成后重试smart_interact
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -340,10 +340,18 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
         log(f"🚀 探索: {name} (sv={repr(sv)})")
         try:
             await page.goto(url, wait_until='domcontentloaded')
-            await wait_page_stable_exp(page)
+            stable = await wait_page_stable_exp(page)
 
             # 填充搜索(sv=None 时 smart_interact 会用 date+primary 逻辑)
             await smart_interact(page, intent, search_var=sv)
+            
+            # v3.9.3: 如果首次 smart_interact 失败（找不到输入框），且页面稳定性等待已超时，
+            # 则等待额外时间让页面加载完成后重试
+            if not stable:
+                log(f"    ⚠️ 首次交互失败，等待页面加载完成后重试...")
+                await asyncio.sleep(10)  # 等待页面完全加载
+                await smart_interact(page, intent, search_var=sv)
+            
             await wait_page_stable_exp(page)
 
             page_links = await get_links_by_text_content_v2(page, sv)
