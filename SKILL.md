@@ -151,8 +151,6 @@ Cortana 分析后输出标准格式报告：
 2. 每个策略包含：`{name, url, sv, filter_criteria, intent}`。
 3. 依次执行每个策略，**每个策略独立翻页提取 + 过滤**。
 4. 策略间结果**合并去重**。
-5. 任意策略首次扫描 < 5 条 → 输出 AI_REPORT，**等待 Cortana 决策**，不机械截短。
-6. Cortana 决策后继续执行或结束。
 
 **多策略找全示例**：
 ```
@@ -187,13 +185,15 @@ Cortana 策略序列：
 | 函数 | 所属分支 | 核心功能 |
 |------|----------|----------|
 | `cortana_execute_flow()` | 有经验分支 | 有经验引导的精准执行入口 |
-| `explore_with_pagination_v2()` | 有经验分支 | 有经验分支专用探索引擎 |
-| `cortana_auto_flow()` | 无经验分支 | **无经验分支主入口**：Cortana 全程感知 → 决策 → 执行，循环找全 |
+| `explore_with_pagination_v2()` | 有经验分支 | 有经验分支专用探索引擎（含多块翻页） |
+| `cortana_auto_flow()` | 无经验分支 | 无经验分支主入口：执行多策略探索 |
+| `explore_with_pagination_noexp()` | 无经验分支 | 无经验分支专用探索引擎（含多块翻页） |
+| `smart_interact_noexp()` | 无经验分支 | 无经验分支搜索交互（含超时重试） |
+| `get_links_noexp()` | 无经验分支 | 无经验分支链接提取（通用策略） |
 | `perceive_current_page()` | 无经验分支 | 感知当前页面结构（导航/搜索框/链接/内容节点） |
-| `wait_for_content_ready()` | 无经验分支 | 等待动态内容加载完成（稳定性检测） |
-| `apply_filters()` | 无经验分支 | 多重过滤：关键词AND匹配 + 噪音过滤 + 日期过滤（仅当任务明确指定日期时生效） |
-| `explore_branch()` | 无经验分支 | 探索分支主逻辑：跳转 → 感知 → 输出AI_REPORT供Cortana决策 |
-| `cortana_perception_flow()` | 无经验分支 | 感知式探索入口（交互式探索，可选） |
+| `wait_page_stable_noexp()` | 无经验分支 | 等待动态内容加载完成（稳定性检测） |
+| `apply_filters()` | 通用 | 多重过滤：关键词AND匹配 + 噪音过滤 + 日期过滤 |
+| `find_content_blocks()` | 通用 | 识别页面中的多个内容块 |
 | `references/user_overrides.yaml` | 有经验分支 | **经验库**：存储人工指导的任务模式匹配规则 |
 
 ## 🚀 版本历史
