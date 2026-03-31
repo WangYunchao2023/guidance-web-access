@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.7 (2026-03-31)  # 新增多块翻页功能（find_content_blocks + find_next_button_for_block）+ 移除5页翻页限制
+版本: 3.9.8 (2026-03-31)  # 修复过滤逻辑严重缺陷：将 any() 改为 all()，确保多关键词搜索时所有词均匹配
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -716,7 +716,8 @@ async def cortana_execute_flow(cortana_plan):
         final_list = raw_list
         if filter_criteria and final_list:
             before = len(final_list)
-            final_list = [r for r in final_list if any(
+            # v3.9.8: 修复过滤逻辑缺陷，改 any() 为 all()，确保所有关键词均匹配
+            final_list = [r for r in final_list if all(
                 q in (r['text'] + r['full_row']) for q in filter_criteria
             )]
             log(f"🔍 Cortana过滤条件 {filter_criteria}: {before} → {len(final_list)} 条")
