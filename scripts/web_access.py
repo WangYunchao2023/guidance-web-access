@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.3 (2026-03-31)  # 修复超时后首次交互失败的问题：在超时后等待页面加载完成后重试smart_interact
+版本: 3.9.5 (2026-03-31)  # 重构链接提取逻辑为更通用的策略：先找所有候选链接，再筛选包含关键词的
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -138,18 +138,48 @@ async def get_links_by_text_content_v2(page, search_keyword=None):
                 date = dateM[1] + '.' + dateM[2].padStart(2,'0') + '.' + dateM[3].padStart(2,'0');
             }
 
-            // 从容器内提取所有有效链接
-            const links = container.querySelectorAll('a[href]');
-            for (const link of links) {
+            // v3.9.5: 更通用的链接提取策略
+            // 策略：无论关键词在什么位置，先找到所有候选链接，再筛选出"文本或容器文本包含关键词"的链接
+            // 这样可以处理：关键词在 <a> 文本内、在 <span.highlight> 内、或在任何子元素内的情况
+            const allLinks = [];
+            
+            if (container.tagName === 'A' && container.href) {
+                // 如果容器本身就是 <a>，直接作为候选
+                allLinks.push(container);
+            } else {
+                // 否则查找容器内以及关键词节点附近的链接
+                allLinks.push(...container.querySelectorAll('a[href]'));
+                
+                // 额外检查：关键词节点的父元素链上是否有 <a> 标签
+                let linkCandidate = kNode.parent;
+                let linkDepth = 0;
+                while (linkCandidate && linkDepth < 5) {
+                    if (linkCandidate.tagName === 'A' && linkCandidate.href && !allLinks.includes(linkCandidate)) {
+                        allLinks.push(linkCandidate);
+                        break;
+                    }
+                    linkCandidate = linkCandidate.parentElement;
+                    linkDepth++;
+                }
+            }
+
+            for (const link of allLinks) {
                 const href = link.href;
                 const linkText = (link.innerText || '').trim();
+                const linkContainerText = (link.parentElement ? link.parentElement.innerText : '').trim();
+                
                 // 过滤无效链接
                 if (!href || !href.startsWith('http') || href.includes('javascript')) continue;
                 if (linkText.length < 3) continue;
                 // 跳过相同 href
                 if (seenHrefs.has(href)) continue;
-                seenHrefs.add(href);
 
+                // v3.9.5: 通用关键词匹配 - 检查链接文本或其容器文本是否包含关键词
+                // 这样可以处理：关键词直接在 <a> 文本中，或在 <a> 的子元素（如 <span.highlight>）中
+                const textToCheck = (linkText + ' ' + linkContainerText).toLowerCase();
+                if (kwLower && !textToCheck.includes(kwLower)) continue;
+
+                seenHrefs.add(href);
                 results.push({
                     href: href,
                     text: linkText,
