@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.5 (2026-03-31)  # 重构链接提取逻辑为更通用的策略：先找所有候选链接，再筛选包含关键词的
+版本: 3.9.6 (2026-03-31)  # 无经验分支重构：新增explore_with_pagination_noexp()多策略探索引擎，cortana_auto_flow支持strategies参数；SKILL.md新增任务理解规则（简称识别、搜索语言规则）
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -850,6 +850,342 @@ async def wait_for_content_ready(page, timeout=15):
     return await wait_page_stable_noexp(page, quiet_rounds=3, max_rounds=timeout)
 
 
+# ================================================================
+# 无经验分支专用函数（与有经验分支完全独立，不共用代码）
+# ================================================================
+
+# ---------- 无经验分支：搜索交互（内置超时重试） ----------
+async def smart_interact_noexp(page, intent, try_date_only=False, search_var=None, search_field=None):
+    """
+    无经验分支专用搜索交互函数
+    与 smart_interact() 逻辑相同，但内置超时重试机制
+    search_var: 传入提取的变量作为搜索词
+    """
+    try:
+        current_url = page.url
+        inputs = await page.evaluate(r'''() => {
+            return Array.from(document.querySelectorAll('input')).map(i => ({ id: i.id, name: i.name, placeholder: i.placeholder, visible: i.offsetWidth > 0 }));
+        }''')
+        log(f"    [smart_interact_noexp] page_url={current_url}, found {len(inputs)} inputs")
+    except Exception as e:
+        log(f"⚠️ [smart_interact_noexp] 页面元素扫描失败: {e}")
+        try:
+            log(f"    [smart_interact_noexp] current_url at failure: {page.url}")
+        except:
+            log(f"    [smart_interact_noexp] could not get page url")
+        inputs = []
+        return False
+    filled = False
+    log(f"    [smart_interact_noexp] try_date_only={try_date_only}, search_var={search_var!r}, search_field={search_field}")
+    if try_date_only:
+        query = intent['date_only']
+        log(f"    [smart_interact_noexp] using date_only query: {query!r}")
+    elif search_var:
+        query = search_var
+        log(f"    [smart_interact_noexp] using search_var query: {query!r}")
+    elif intent.get('date') and intent.get('primary'):
+        query = intent['primary']
+        log(f"    [smart_interact_noexp] 日期+主体词:标题填'{query}',日期由专用字段处理")
+    else:
+        query = intent['query']
+        log(f"    [smart_interact_noexp] using intent query: {query!r}")
+
+    log(f"🧠 感知到 {len(inputs)} 个输入框: {[i['placeholder'] or i['id'] or i['name'] for i in inputs if i['visible']]}")
+    for i in inputs:
+        meta = (str(i['id'] or '') + str(i['name'] or '') + str(i['placeholder'] or '')).lower()
+        if any(k in meta for k in ['keyword', '关键词', '标题', 'search']) and i['visible']:
+            selector = f"input[placeholder='{i['placeholder']}']" if i['placeholder'] else (f"input[name='{i['name']}']" if i['name'] else f"input[id='{i['id']}']")
+            log(f"    ✏️ 填充搜索框: {selector} (填入: {query})")
+            await page.fill(selector, query)
+            search_btn = await page.query_selector('button:has-text("搜索"), .search-btn, #searchBtn, .btn-search')
+            if search_btn:
+                await search_btn.click()
+                log("    🖱️ 点击搜索按钮")
+            else:
+                await page.keyboard.press('Enter')
+                log("    ⌨️ 按下回车")
+            filled = True
+        # layui readonly 日期组件
+        if intent['date'] and any(k in meta for k in ['date', 'time', '日期']):
+            try:
+                selector = f"input[name='{i['name']}']" if i['name'] else f"input[id='{i['id']}']"
+                await page.evaluate(r'''(args) => {
+                    const el = document.querySelector(args.selector);
+                    if (!el) return;
+                    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    nativeSetter.call(el, args.value);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (window.layui && window.layui.laydate) {
+                        try { window.layui.laydate.render({ elem: el, value: args.value }); } catch(e) {}
+                    }
+                }''', {"selector": selector, "value": intent['date']})
+                filled = True
+            except: pass
+    if filled:
+        await asyncio.sleep(5)
+    return filled
+
+
+# ---------- 无经验分支：链接提取 ----------
+async def get_links_noexp(page, search_keyword=None):
+    """
+    无经验分支专用链接提取函数（v3.9.5通用版）
+    与 get_links_by_text_content_v2() 逻辑相同
+    """
+    return await page.evaluate(r'''
+        (searchKeyword) => {
+        const keyword = searchKeyword || '';
+        const kwLower = keyword.toLowerCase();
+
+        const bodyText = (document.body.innerText || document.body.textContent || '');
+        const bodyLen = bodyText.trim().length;
+        if (bodyLen === 0) return [];
+
+        const walker = document.createTreeWalker(
+            document.body,
+            NodeFilter.SHOW_TEXT,
+            null
+        );
+
+        const allTextNodes = [];
+        let node;
+        while (node = walker.nextNode()) {
+            const text = (node.nodeValue || '').trim();
+            if (text.length > 2 && text.length < 500) {
+                allTextNodes.push({
+                    node: node,
+                    text: text,
+                    parent: node.parentElement
+                });
+            }
+        }
+
+        const keywordNodes = [];
+
+        if (kwLower) {
+            const directMatch = allTextNodes.filter(tn => tn.text.toLowerCase().includes(kwLower));
+            if (directMatch.length > 0) {
+                keywordNodes.push(...directMatch);
+            } else {
+                for (const tn of allTextNodes) {
+                    let container = tn.parent;
+                    let depth = 0;
+                    while (container && depth < 5) {
+                        const containerText = (container.innerText || '').toLowerCase();
+                        if (containerText.includes(kwLower)) {
+                            keywordNodes.push(tn);
+                            break;
+                        }
+                        container = container.parentElement;
+                        depth++;
+                    }
+                }
+            }
+        } else {
+            keywordNodes.push(...allTextNodes);
+        }
+
+        if (keywordNodes.length === 0) {
+            return [];
+        }
+
+        const results = [];
+        const seenHrefs = new Set();
+
+        for (const kNode of keywordNodes) {
+            let block = kNode.parent;
+            let depth = 0;
+            while (block && depth < 10) {
+                const tag = block.tagName;
+                if (tag === 'DIV' || tag === 'LI' || tag === 'TR' || tag === 'TD' || tag === 'A' || tag === 'ARTICLE') {
+                    break;
+                }
+                block = block.parentElement;
+                depth++;
+            }
+            const container = block || document.body;
+
+            const containerText = container.innerText || '';
+            let date = null;
+            const dateM = containerText.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
+            if (dateM) {
+                date = dateM[1] + '.' + dateM[2].padStart(2,'0') + '.' + dateM[3].padStart(2,'0');
+            }
+
+            const allLinks = [];
+            
+            if (container.tagName === 'A' && container.href) {
+                allLinks.push(container);
+            } else {
+                allLinks.push(...container.querySelectorAll('a[href]'));
+                
+                let linkCandidate = kNode.parent;
+                let linkDepth = 0;
+                while (linkCandidate && linkDepth < 5) {
+                    if (linkCandidate.tagName === 'A' && linkCandidate.href && !allLinks.includes(linkCandidate)) {
+                        allLinks.push(linkCandidate);
+                        break;
+                    }
+                    linkCandidate = linkCandidate.parentElement;
+                    linkDepth++;
+                }
+            }
+
+            for (const link of allLinks) {
+                const href = link.href;
+                const linkText = (link.innerText || '').trim();
+                const linkContainerText = (link.parentElement ? link.parentElement.innerText : '').trim();
+                
+                if (!href || !href.startsWith('http') || href.includes('javascript')) continue;
+                if (linkText.length < 3) continue;
+                if (seenHrefs.has(href)) continue;
+
+                const textToCheck = (linkText + ' ' + linkContainerText).toLowerCase();
+                if (kwLower && !textToCheck.includes(kwLower)) continue;
+
+                seenHrefs.add(href);
+                results.push({
+                    href: href,
+                    text: linkText,
+                    full_row: (container.innerText || '').replace(/\s+/g, ' ').trim(),
+                    date: date
+                });
+            }
+        }
+
+        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多', '更多>'];
+        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见', '规范', '准则', '要求', '技术', '指引', '原则'];
+
+        const filtered = results.filter(r => {
+            const row = (r.full_row || '') + (r.text || '');
+            if (noiseIndicators.every(n => !row.includes(n))) {
+                if (!contentIndicators.some(c => row.includes(c)) && r.text.length < 15) {
+                    return false;
+                }
+            }
+            return row.length >= 10;
+        });
+
+        return filtered;
+    }''', search_keyword)
+
+
+# ---------- 无经验分支：探索引擎（多策略版） ----------
+async def explore_with_pagination_noexp(page, intent, exploration_points):
+    """
+    无经验分支专用探索函数：按多策略序列执行
+    
+    exploration_points: dict{name, url, sv, filter_criteria}
+    执行流程：依次执行每个策略 → 翻页提取 → 合并去重 → 返回所有结果
+    
+    核心差异（有经验 vs 无经验）：
+    - 有经验：固定 URL，使用 user_overrides.yaml 配置
+    - 无经验：策略由 Cortana 制定，每次都需要感知页面后决策
+    - 两者都使用独立的函数副本，互不共享
+    """
+    all_results = []
+    seen = set()
+    
+    for name, pt in exploration_points.items():
+        url = pt.get("url")
+        sv = pt.get("sv")  # 搜索词
+        filter_criteria = pt.get("filter_criteria", [])
+        
+        log(f"🚀 无经验探索: {name} (sv={repr(sv)}, url={url[:60] if url else 'None'})")
+        
+        if not url:
+            log(f"    ⚠️ 跳过：无 URL")
+            continue
+        
+        try:
+            await page.goto(url, wait_until='domcontentloaded')
+            stable = await wait_page_stable_noexp(page)
+            
+            # v3.9.6: 无经验分支也应用超时重试逻辑
+            await smart_interact_noexp(page, intent, search_var=sv)
+            
+            if not stable:
+                log(f"    ⚠️ 首次交互失败，等待页面加载完成后重试...")
+                await asyncio.sleep(10)
+                await smart_interact_noexp(page, intent, search_var=sv)
+            
+            await wait_page_stable_noexp(page)
+            
+            # 提取当前页结果
+            page_links = await get_links_noexp(page, sv)
+            log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
+            for dl in page_links[:5]:
+                log(f"       [{dl.get('date','无日期')}] {dl['text'][:60]}")
+            
+            # 应用策略级过滤
+            if filter_criteria and page_links:
+                before = len(page_links)
+                page_links = [r for r in page_links if all(
+                    q in (r['text'] + r['full_row']) for q in filter_criteria
+                )]
+                log(f"    🔍 策略过滤 {filter_criteria}: {before} → {len(page_links)} 条")
+            
+            for l in page_links:
+                if l['href'] not in seen:
+                    all_results.append(l); seen.add(l['href'])
+            
+            # 翻页（无经验分支自主翻页，不需要感知决策）
+            for p_idx in range(2, 6):
+                next_btn = (
+                    await page.query_selector('text="下一页"') or
+                    await page.query_selector('a:has-text("下一页")') or
+                    await page.query_selector('button:has-text("下一页")') or
+                    await page.query_selector('a:has-text(">")') or
+                    await page.query_selector('.layui-laypage-next') or
+                    await page.query_selector('[aria-label="下一页"]')
+                )
+                
+                if not next_btn:
+                    log(f"    📄 第{p_idx-1}页已完成，未找到下一页按钮")
+                    break
+                
+                is_disabled = await next_btn.get_attribute('disabled')
+                cls = await next_btn.get_attribute('class') or ''
+                txt = (await next_btn.inner_text()).strip()
+                
+                if is_disabled is not None or 'layui-disabled' in cls or 'disabled' in cls:
+                    if 'layui-disabled' not in cls:
+                        pass
+                    log(f"    📄 第{p_idx-1}页已完成，翻页按钮已禁用")
+                    break
+                
+                if not txt:
+                    log(f"    📄 第{p_idx-1}页已完成，按钮无文本")
+                    break
+                
+                log(f"    📄 翻到第{p_idx}页...")
+                await next_btn.click()
+                await wait_page_stable_noexp(page)
+                
+                # 提取当前页
+                page_links = await get_links_noexp(page, sv)
+                log(f"    📄 第{p_idx}页: 找到 {len(page_links)} 条")
+                
+                # 应用策略级过滤
+                if filter_criteria and page_links:
+                    before = len(page_links)
+                    page_links = [r for r in page_links if all(
+                        q in (r['text'] + r['full_row']) for q in filter_criteria
+                    )]
+                    log(f"    🔍 策略过滤 {filter_criteria}: {before} → {len(page_links)} 条")
+                
+                for l in page_links:
+                    if l['href'] not in seen:
+                        all_results.append(l); seen.add(l['href'])
+                        
+        except Exception as e:
+            log(f"    ⚠️ 探索异常: {e}")
+            continue
+    
+    return all_results
+
+
 # ---------- 多重过滤 ----------
 def apply_filters(results, filter_criteria, date_enabled=False, date_value=None):
     """多重过滤：关键词AND匹配 + 噪音过滤 + 日期过滤（仅当任务明确指定日期时）"""
@@ -956,64 +1292,58 @@ async def explore_branch(page, url, depth, state, intent, filter_criteria, date_
 # ---------- cortana_auto_flow ----------
 async def cortana_auto_flow(cortana_plan):
     """
-    无经验分支主入口：Cortana 全程感知 + 决策探索
+    无经验分支主入口：Cortana 全程感知 + 多策略执行
 
     cortana_plan 格式:
     {
         "task": "任务描述",
-        "base_url": "起始URL（必填）",
-        "filter_criteria": ["词1", "词2"],        // 可选，全局过滤
-        "date_filter": "2025-03-09",               // 可选，仅任务明确指定日期时填
+        "strategies": [                           // 必填，Cortana制定的多策略序列
+            {"name": "策略1", "url": "https://...", "sv": "搜索词", "filter_criteria": ["词1"]},
+            {"name": "策略2", "url": "https://...", "sv": None, "filter_criteria": ["词2"]}
+        ],
+        "filter_criteria": ["词1", "词2"],        // 可选，全局过滤（所有策略结果都过滤）
+        "date_filter": "2025-03-09",             // 可选，仅任务明确指定日期时填
         "intent": {
             "query": "完整任务描述",
-            "primary": "核心搜索词",               // 可选
-            "date": "日期描述",                    // 可选
+            "primary": "核心搜索词",
+            "date": "日期描述",
             "original": "原始任务"
         },
-        "initial_candidates": [                     // 可选，Cortana感知首页后认为高相关的链接
-            {"name": "链接名", "url": "https://...", "relevance": "high|medium|low"}
-        ],
-        "save_dir": "~/Documents/...",             // 可选
-        "download_enabled": true                   // 任务是否要求下载
+        "save_dir": "~/Documents/...",            // 可选
+        "download_enabled": true                  // 任务是否要求下载
     }
 
-    执行流程（每步都感知 → Cortana决策 → 执行）:
-        1. 打开首页 → 感知
-        2. Cortana 分析感知结果 → 决策
-        3. 按决策执行（点击链接 / 搜索 / 返回）
-        4. 每步都感知 → Cortana决策 → 执行（循环）
-        5. 直到所有分支遍历完毕
-        6. 汇总所有结果 → 多重过滤
-        7. 根据 download_enabled 决定是否下载
+    执行流程:
+        1. Cortana 制定多策略序列
+        2. 依次执行每个策略（探索 + 翻页 + 提取）
+        3. 合并去重
+        4. 多重过滤
+        5. 根据 download_enabled 决定是否下载
     """
-    log("🎯 Cortana 全程感知探索: {}".format(cortana_plan.get('task', '')))
+    log("🎯 Cortana 多策略探索: {}".format(cortana_plan.get('task', '')))
 
-    base_url = cortana_plan.get('base_url')
+    strategies = cortana_plan.get('strategies', [])
     filter_criteria = cortana_plan.get('filter_criteria', [])
     date_filter = cortana_plan.get('date_filter')
     date_enabled = date_filter is not None
     intent = cortana_plan.get('intent', {})
     save_dir = cortana_plan.get('save_dir')
     download_enabled = cortana_plan.get('download_enabled', False)
-    initial_candidates = cortana_plan.get('initial_candidates', [])
 
-    if not base_url:
-        log("❌ cortana_auto_flow 需要 base_url 参数")
+    if not strategies:
+        log("❌ cortana_auto_flow 需要 strategies 参数")
         return
 
-    log("📌 base_url: {}".format(base_url))
-    log("📌 filter_criteria: {}".format(filter_criteria))
+    log("📌 策略数量: {}".format(len(strategies)))
+    for i, s in enumerate(strategies):
+        log("📌 策略{}: name={}, url={}, sv={}, filter={}".format(
+            i+1, s.get('name', ''), s.get('url', '')[:50] if s.get('url') else 'None', 
+            s.get('sv', ''), s.get('filter_criteria', [])))
+    log("📌 全局 filter_criteria: {}".format(filter_criteria))
     log("📌 date_filter: {} (enabled={})".format(date_filter, date_enabled))
     log("📌 download_enabled: {}".format(download_enabled))
-    log("📌 initial_candidates: {} 个".format(len(initial_candidates)))
 
-    # 探索状态（纯内存，过程结束后自动销毁）
-    state = {
-        'visited_urls': set(),
-        'search_history': [],
-        'all_results': [],
-        'pending_candidates': []
-    }
+    all_results = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
@@ -1023,66 +1353,26 @@ async def cortana_auto_flow(cortana_plan):
             delete navigator.__proto__.webdriver;
         }''')
 
-        # Step 1: 打开首页 → 感知
-        log("\n🚀 打开首页...")
-        await page.goto(base_url, wait_until='domcontentloaded')
-        await wait_page_stable_noexp(page)
-        home_info = await perceive_current_page(page)
-        state['visited_urls'].add(home_info['url'])
+        # 构建探索点（格式符合 explore_with_pagination_noexp 要求）
+        exploration_points = {}
+        for i, s in enumerate(strategies):
+            name = s.get('name', '策略{}'.format(i+1))
+            exploration_points[name] = {
+                'url': s.get('url'),
+                'sv': s.get('sv'),
+                'filter_criteria': s.get('filter_criteria', [])
+            }
 
-        # 首页 AI_REPORT
-        log("\n{}".format("="*60))
-        log("🤖 AI_REPORT: 首页感知完成，等待Cortana决策")
-        log("   page_title: {}".format(home_info.get('title', '')[:60]))
-        log("   search_inputs: {} 个".format(len(home_info.get('search_inputs', []))))
-        nav_list = home_info.get('nav_links', [])
-        content_list = home_info.get('content_links', [])
-        log("   nav_links: {} 个".format(len(nav_list)))
-        for lk in nav_list[:10]:
-            log("      - {} -> {}".format(lk['name'][:30], lk['url'][:60]))
-        log("   content_links: {} 个".format(len(content_list)))
-        for lk in content_list[:10]:
-            log("      - {} -> {}".format(lk['name'][:40], lk['url'][:60]))
-        log("   intent.query: {!r}".format(intent.get('query', '')))
-        log("   intent.primary: {!r}".format(intent.get('primary', '')))
-        log("   filter_criteria: {}".format(filter_criteria))
-        log("   date_filter: {} (enabled={})".format(date_filter, date_enabled))
-        log("{}".format("="*60))
-        log("💡 Cortana请分析以上首页感知结果，决策下一步:")
-        log("   - 是否使用搜索框搜索？")
-        log("   - 点击哪些链接深入探索？")
-        log("   - initial_candidates中的链接是否都高相关？")
-        log("   请传入: next_action, sv, candidates 等决策参数")
-        log("{}".format("="*60))
+        # Step 1: 多策略探索
+        log("\n🚀 开始多策略探索...")
+        all_results = await explore_with_pagination_noexp(page, intent, exploration_points)
+        log("📊 多策略探索完成: 共找到 {} 条".format(len(all_results)))
 
-        # Step 2: 探索 initial_candidates
-        if initial_candidates:
-            sorted_cands = sorted(initial_candidates,
-                key=lambda x: {'high': 0, 'medium': 1, 'low': 2}.get(x.get('relevance', 'medium'), 1))
-            for cand in sorted_cands:
-                if not cand.get('url') or cand['url'] in state['visited_urls']:
-                    continue
-                results = await explore_branch(
-                    page, cand['url'], depth=1,
-                    state=state, intent=intent,
-                    filter_criteria=filter_criteria,
-                    date_enabled=date_enabled,
-                    date_value=date_filter
-                )
-                state['all_results'].extend(results)
-
-        # Step 3: 汇总
-        log("\n{}".format("="*60))
-        log("📊 探索汇总:")
-        log("   已探索URL数: {}".format(len(state['visited_urls'])))
-        log("   已搜索次数: {}".format(len(state['search_history'])))
-        log("   找到结果总数: {}".format(len(state['all_results'])))
-        log("{}".format("="*60))
-
-        # Step 4: 多重过滤
-        if state['all_results']:
-            filtered = apply_filters(state['all_results'], filter_criteria, date_enabled, date_filter)
-            log("   多重过滤后: {} 条".format(len(filtered)))
+        # Step 2: 多重过滤（全局过滤）
+        filtered = all_results
+        if filtered:
+            filtered = apply_filters(filtered, filter_criteria, date_enabled, date_filter)
+            log("📊 全局过滤后: {} 条".format(len(filtered)))
             if filtered and download_enabled:
                 log("📋 开始下载 {} 个文件...".format(len(filtered)))
                 downloaded = await final_download(page, filtered,
