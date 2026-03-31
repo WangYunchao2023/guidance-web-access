@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.6 (2026-03-31)  # 无经验分支重构：新增explore_with_pagination_noexp()多策略探索引擎，cortana_auto_flow支持strategies参数；SKILL.md新增任务理解规则（简称识别、搜索语言规则）
+版本: 3.9.7 (2026-03-31)  # 新增多块翻页功能（find_content_blocks + find_next_button_for_block）+ 移除5页翻页限制
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -356,11 +356,13 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
     """
     有经验分支专用探索函数：按 Cortana 制订的完整计划执行，不中途决策。
     
+    v3.9.7: 支持多块翻页 + 无限翻页（移除5页限制）
+    
     exploration_points: dict{name: {"url": str, "sv": str|None}}
       sv=None  → 不填搜索框，由 smart_interact 的 date+primary 逻辑决定填什么
       sv=str   → 用指定字符串填搜索框
     
-    执行流程：依次执行每个探索点 → 翻页提取 → 合并去重 → 返回所有结果
+    执行流程：依次执行每个探索点 → 多块翻页提取 → 合并去重 → 返回所有结果
     """
     all_results = []
     seen = set()
@@ -384,64 +386,184 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
             
             await wait_page_stable_exp(page)
 
-            page_links = await get_links_by_text_content_v2(page, sv)
-            log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
-            # 调试:打印前5条的日期
-            for dl in page_links[:5]:
-                log(f"       [{dl.get('date','无日期')}] {dl['text'][:60]}")
-            for l in page_links:
-                if l['href'] not in seen:
-                    all_results.append(l); seen.add(l['href'])
-
-            # 翻页（增强版）
-            for p_idx in range(2, 6):
-                try:
-                    # 多种选择器检测"下一页"按钮
-                    next_btn = (
-                        await page.query_selector('text="下一页"') or
-                        await page.query_selector('a:has-text("下一页")') or
-                        await page.query_selector('button:has-text("下一页")') or
-                        await page.query_selector('a:has-text(">")') or
-                        await page.query_selector('.layui-laypage-next') or
-                        await page.query_selector('[aria-label="下一页"]')
-                    )
-                    
-                    if not next_btn:
-                        log(f"    📄 第{p_idx-1}页已完成，未找到下一页按钮，停止翻页")
-                        break
-                    
-                    # 检查按钮是否可点击
-                    is_disabled = await next_btn.get_attribute('disabled')
-                    cls = await next_btn.get_attribute('class') or ''
-                    txt = (await next_btn.inner_text()).strip()
-                    
-                    # 判断是否禁用：class包含disabled或aria-disabled，或有disabled属性
-                    if is_disabled is not None or 'layui-disabled' in cls or 'disabled' in cls:
-                        if 'layui-disabled' not in cls:
-                            pass  # 可能只是最后一页
-                        log(f"    📄 第{p_idx-1}页已完成，翻页按钮已禁用，停止翻页")
-                        break
-                    
-                    if not txt:
-                        log(f"    📄 第{p_idx-1}页已完成，按钮无文本，停止翻页")
-                        break
-                    
-                    log(f"    📄 翻到第{p_idx}页...")
-                    await next_btn.click()
-                    await wait_page_stable_exp(page)
-                    
-                    # 扫描当前页
-                    page_links = await get_links_by_text_content_v2(page, None)
-                    log(f"    📄 第{p_idx}页: 找到 {len(page_links)} 条")
+            # v3.9.7: 识别页面中的多个内容块
+            blocks = await find_content_blocks(page)
+            if len(blocks) > 1:
+                log(f"    📦 发现 {len(blocks)} 个内容块，将分别翻页提取")
+            elif len(blocks) == 1:
+                log(f"    📦 发现 {len(blocks)} 个内容块")
+            
+            # v3.9.7: 对每个块分别翻页提取
+            for block_idx, block_id in enumerate(blocks):
+                block_label = blocks[block_id].get('label', f'块{block_idx+1}')
+                log(f"    📄 处理块: {block_label}")
+                
+                # 提取当前块当前页结果
+                page_links = await get_links_by_text_content_v2(page, sv)
+                if page_links:
+                    log(f"    📋 [{block_label}] 首次扫描: 找到 {len(page_links)} 条")
+                    for dl in page_links[:3]:
+                        log(f"       [{dl.get('date','无日期')}] {dl['text'][:50]}...")
                     for l in page_links:
-                        if l['href'] not in seen: all_results.append(l); seen.add(l['href'])
+                        if l['href'] not in seen:
+                            all_results.append(l); seen.add(l['href'])
+                
+                # v3.9.7: 无限翻页，直到没有更多页
+                p_idx = 2
+                while True:
+                    try:
+                        # v3.9.7: 针对特定块查找翻页按钮
+                        next_btn = await find_next_button_for_block(page, block_id)
                         
-                except Exception as e:
-                    log(f"    ⚠️ 翻页异常: {e}")
-                    break
+                        if not next_btn:
+                            log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，未找到下一页按钮")
+                            break
+                        
+                        # 检查按钮是否可点击
+                        is_disabled = await next_btn.get_attribute('disabled')
+                        cls = await next_btn.get_attribute('class') or ''
+                        txt = (await next_btn.inner_text()).strip()
+                        
+                        # 判断是否禁用
+                        if is_disabled is not None or 'layui-disabled' in cls or 'disabled' in cls:
+                            log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，翻页按钮已禁用")
+                            break
+                        
+                        if not txt:
+                            log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，按钮无文本")
+                            break
+                        
+                        log(f"    📄 [{block_label}] 翻到第{p_idx}页...")
+                        await next_btn.click()
+                        await wait_page_stable_exp(page)
+                        
+                        # 扫描当前页
+                        page_links = await get_links_by_text_content_v2(page, sv)
+                        log(f"    📄 [{block_label}] 第{p_idx}页: 找到 {len(page_links)} 条")
+                        for l in page_links:
+                            if l['href'] not in seen:
+                                all_results.append(l); seen.add(l['href'])
+                        
+                        p_idx += 1
+                        # v3.9.7: 移除5页限制，有多少页翻多少页
+                        
+                    except Exception as e:
+                        log(f"    ⚠️ [{block_label}] 翻页异常: {e}")
+                        break
+                        
         except Exception as e:
             log(f"⚠️ 探索异常: {e}")
     return all_results
+
+
+# v3.9.7: 辅助函数 - 识别页面中的多个内容块
+async def find_content_blocks(page):
+    """
+    识别页面中的多个内容块（如 layui table、分类表格等）
+    返回: dict{block_id: {label, selector}}
+    """
+    blocks = await page.evaluate(r'''() => {
+        const result = {};
+        
+        // 方案1: 查找 layui table 组件
+        const layuiTables = document.querySelectorAll('.layui-table-view');
+        layuiTables.forEach((table, idx) => {
+            // 尝试获取表格标题（如"发布通告"、"征求意见"等）
+            let label = '表格' + (idx + 1);
+            const header = table.querySelector('.layui-table-header');
+            if (header) {
+                const firstHeader = header.querySelector('th');
+                if (firstHeader && firstHeader.innerText.trim()) {
+                    label = firstHeader.innerText.trim();
+                }
+            }
+            // 也尝试从父容器的标题获取
+            const prevSibling = table.previousElementSibling;
+            if (prevSibling && prevSibling.classList && prevSibling.classList.contains('el-divider')) {
+                label = prevSibling.innerText.trim() || label;
+            }
+            result['layui_' + idx] = {label: label, selector: '.layui-table-view:nth-child(' + (idx + 1) + ')'};
+        });
+        
+        // 方案2: 查找带翻页的内容块（classContent 系列）
+        const classContents = document.querySelectorAll('.classContent');
+        classContents.forEach((content, idx) => {
+            // 获取块标签（如 fbtgList、zqyjtzList 等）
+            const className = content.className.split(' ').find(c => c.endsWith('List'));
+            if (className) {
+                const prev = content.previousElementSibling;
+                let label = className;
+                if (prev && prev.classList && prev.classList.contains('el-divider')) {
+                    label = prev.innerText.trim() || className;
+                }
+                result[className] = {label: label, selector: '.' + className};
+            }
+        });
+        
+        // 方案3: 查找所有表格
+        if (Object.keys(result).length === 0) {
+            const tables = document.querySelectorAll('table');
+            tables.forEach((table, idx) => {
+                if (table.querySelector('tbody')) {
+                    result['table_' + idx] = {label: '表格' + (idx + 1), selector: 'table:nth-of-type(' + (idx + 1) + ')'};
+                }
+            });
+        }
+        
+        return result;
+    }''')
+    return blocks
+
+
+# v3.9.7: 辅助函数 - 查找特定块对应的翻页按钮
+async def find_next_button_for_block(page, block_id):
+    """
+    查找特定内容块的下一页按钮
+    对于 layui table，每个表格有自己的翻页控件
+    """
+    if block_id.startswith('layui_'):
+        idx = block_id.replace('layui_', '')
+        # 查找对应索引的 layui table 的翻页按钮
+        selectors = [
+            f'.layui-table-view:nth-of-type({int(idx)+1}) .layui-laypage-next',
+            f'.layui-table-view:nth-of-type({int(idx)+1}) [data-page]',
+            f'.layui-table-view:nth-of-type({int(idx)+1}) a[href="javascript:;"][class*="next"]',
+        ]
+    elif block_id.startswith('table_'):
+        # 普通表格，使用通用选择器
+        selectors = [
+            'text="下一页"',
+            'a:has-text("下一页")',
+            'button:has-text("下一页")',
+        ]
+    else:
+        # 其他块，使用通用选择器
+        selectors = [
+            'text="下一页"',
+            'a:has-text("下一页")',
+            'button:has-text("下一页")',
+            'a:has-text(">")',
+            '.layui-laypage-next',
+            '[aria-label="下一页"]'
+        ]
+    
+    for sel in selectors:
+        try:
+            btn = await page.query_selector(sel)
+            if btn:
+                return btn
+        except:
+            continue
+    
+    # 如果特定选择器没找到，使用通用选择器
+    return (
+        await page.query_selector('text="下一页"') or
+        await page.query_selector('a:has-text("下一页")') or
+        await page.query_selector('button:has-text("下一页")') or
+        await page.query_selector('a:has-text(">")') or
+        await page.query_selector('.layui-laypage-next') or
+        await page.query_selector('[aria-label="下一页"]')
+    )
 
 # ==================== 🧬 模糊语义匹配 ====================
 
@@ -1076,8 +1198,10 @@ async def explore_with_pagination_noexp(page, intent, exploration_points):
     """
     无经验分支专用探索函数：按多策略序列执行
     
+    v3.9.7: 支持多块翻页 + 无限翻页（移除5页限制）
+    
     exploration_points: dict{name, url, sv, filter_criteria}
-    执行流程：依次执行每个策略 → 翻页提取 → 合并去重 → 返回所有结果
+    执行流程：依次执行每个策略 → 多块翻页提取 → 合并去重 → 返回所有结果
     
     核心差异（有经验 vs 无经验）：
     - 有经验：固定 URL，使用 user_overrides.yaml 配置
@@ -1112,72 +1236,88 @@ async def explore_with_pagination_noexp(page, intent, exploration_points):
             
             await wait_page_stable_noexp(page)
             
-            # 提取当前页结果
-            page_links = await get_links_noexp(page, sv)
-            log(f"    📋 首次扫描: 找到 {len(page_links)} 条")
-            for dl in page_links[:5]:
-                log(f"       [{dl.get('date','无日期')}] {dl['text'][:60]}")
+            # v3.9.7: 识别页面中的多个内容块
+            blocks = await find_content_blocks(page)
+            if len(blocks) > 1:
+                log(f"    📦 发现 {len(blocks)} 个内容块，将分别翻页提取")
+            elif len(blocks) == 1:
+                log(f"    📦 发现 {len(blocks)} 个内容块")
             
-            # 应用策略级过滤
-            if filter_criteria and page_links:
-                before = len(page_links)
-                page_links = [r for r in page_links if all(
-                    q in (r['text'] + r['full_row']) for q in filter_criteria
-                )]
-                log(f"    🔍 策略过滤 {filter_criteria}: {before} → {len(page_links)} 条")
-            
-            for l in page_links:
-                if l['href'] not in seen:
-                    all_results.append(l); seen.add(l['href'])
-            
-            # 翻页（无经验分支自主翻页，不需要感知决策）
-            for p_idx in range(2, 6):
-                next_btn = (
-                    await page.query_selector('text="下一页"') or
-                    await page.query_selector('a:has-text("下一页")') or
-                    await page.query_selector('button:has-text("下一页")') or
-                    await page.query_selector('a:has-text(">")') or
-                    await page.query_selector('.layui-laypage-next') or
-                    await page.query_selector('[aria-label="下一页"]')
-                )
+            # v3.9.7: 对每个块分别翻页提取
+            for block_idx, block_id in enumerate(blocks):
+                block_label = blocks[block_id].get('label', f'块{block_idx+1}')
+                log(f"    📄 处理块: {block_label}")
                 
-                if not next_btn:
-                    log(f"    📄 第{p_idx-1}页已完成，未找到下一页按钮")
-                    break
-                
-                is_disabled = await next_btn.get_attribute('disabled')
-                cls = await next_btn.get_attribute('class') or ''
-                txt = (await next_btn.inner_text()).strip()
-                
-                if is_disabled is not None or 'layui-disabled' in cls or 'disabled' in cls:
-                    if 'layui-disabled' not in cls:
-                        pass
-                    log(f"    📄 第{p_idx-1}页已完成，翻页按钮已禁用")
-                    break
-                
-                if not txt:
-                    log(f"    📄 第{p_idx-1}页已完成，按钮无文本")
-                    break
-                
-                log(f"    📄 翻到第{p_idx}页...")
-                await next_btn.click()
-                await wait_page_stable_noexp(page)
-                
-                # 提取当前页
+                # 提取当前块当前页结果
                 page_links = await get_links_noexp(page, sv)
-                log(f"    📄 第{p_idx}页: 找到 {len(page_links)} 条")
+                if page_links:
+                    log(f"    📋 [{block_label}] 首次扫描: 找到 {len(page_links)} 条")
+                    for dl in page_links[:3]:
+                        log(f"       [{dl.get('date','无日期')}] {dl['text'][:50]}...")
+                    
+                    # 应用策略级过滤
+                    if filter_criteria:
+                        before = len(page_links)
+                        page_links = [r for r in page_links if all(
+                            q in (r['text'] + r['full_row']) for q in filter_criteria
+                        )]
+                        if len(page_links) < before:
+                            log(f"    🔍 策略过滤 {filter_criteria}: {before} → {len(page_links)} 条")
+                    
+                    for l in page_links:
+                        if l['href'] not in seen:
+                            all_results.append(l); seen.add(l['href'])
                 
-                # 应用策略级过滤
-                if filter_criteria and page_links:
-                    before = len(page_links)
-                    page_links = [r for r in page_links if all(
-                        q in (r['text'] + r['full_row']) for q in filter_criteria
-                    )]
-                    log(f"    🔍 策略过滤 {filter_criteria}: {before} → {len(page_links)} 条")
-                
-                for l in page_links:
-                    if l['href'] not in seen:
-                        all_results.append(l); seen.add(l['href'])
+                # v3.9.7: 无限翻页，直到没有更多页
+                p_idx = 2
+                while True:
+                    try:
+                        # v3.9.7: 针对特定块查找翻页按钮
+                        next_btn = await find_next_button_for_block(page, block_id)
+                        
+                        if not next_btn:
+                            log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，未找到下一页按钮")
+                            break
+                        
+                        is_disabled = await next_btn.get_attribute('disabled')
+                        cls = await next_btn.get_attribute('class') or ''
+                        txt = (await next_btn.inner_text()).strip()
+                        
+                        if is_disabled is not None or 'layui-disabled' in cls or 'disabled' in cls:
+                            log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，翻页按钮已禁用")
+                            break
+                        
+                        if not txt:
+                            log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，按钮无文本")
+                            break
+                        
+                        log(f"    📄 [{block_label}] 翻到第{p_idx}页...")
+                        await next_btn.click()
+                        await wait_page_stable_noexp(page)
+                        
+                        # 提取当前页
+                        page_links = await get_links_noexp(page, sv)
+                        log(f"    📄 [{block_label}] 第{p_idx}页: 找到 {len(page_links)} 条")
+                        
+                        # 应用策略级过滤
+                        if filter_criteria and page_links:
+                            before = len(page_links)
+                            page_links = [r for r in page_links if all(
+                                q in (r['text'] + r['full_row']) for q in filter_criteria
+                            )]
+                            if len(page_links) < before:
+                                log(f"    🔍 策略过滤 {filter_criteria}: {before} → {len(page_links)} 条")
+                        
+                        for l in page_links:
+                            if l['href'] not in seen:
+                                all_results.append(l); seen.add(l['href'])
+                        
+                        p_idx += 1
+                        # v3.9.7: 移除5页限制，有多少页翻多少页
+                        
+                    except Exception as e:
+                        log(f"    ⚠️ [{block_label}] 翻页异常: {e}")
+                        break
                         
         except Exception as e:
             log(f"    ⚠️ 探索异常: {e}")
