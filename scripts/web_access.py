@@ -40,9 +40,8 @@ async def get_links_by_text_content_v2(page, search_keyword=None, block_selector
             只扫描指定块内的内容，避免跨块重复提取。
     """
     return await page.evaluate(r'''
-        (searchKeyword, blockSelector) => {
-        const keyword = searchKeyword || '';
-        const kwLower = keyword.toLowerCase();
+        ({keyword: searchKeyword, blockSelector: blockSelector}) => {
+        const kwLower = (searchKeyword || '').toLowerCase();
 
         // =============================================
         // 步骤1: 确定扫描根元素（整页 or 特定块）
@@ -55,8 +54,6 @@ async def get_links_by_text_content_v2(page, search_keyword=None, block_selector
             rootElement = document.body;
         }
         const rootText = (rootElement.innerText || rootElement.textContent || '');
-        const keyword = searchKeyword || '';
-        const kwLower = keyword.toLowerCase();
 
         // =============================================
         // 步骤1: 获取 body innerText
@@ -225,7 +222,7 @@ async def get_links_by_text_content_v2(page, search_keyword=None, block_selector
         });
 
         return filtered;
-    }''', search_keyword, block_selector)
+    }''', {'keyword': search_keyword, 'blockSelector': block_selector})
 
 # ================================================================
 # v3.0.0: 全扫描+关键词匹配 - 最通用方案
@@ -442,7 +439,7 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
                 while True:
                     try:
                         # v3.9.7: 针对特定块查找翻页按钮
-                        next_btn = await find_next_button_for_block(page, block_id)
+                        next_btn = await find_next_button_for_block(page, block_id, block_sel)
                         
                         if not next_btn:
                             log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，未找到下一页按钮")
@@ -552,55 +549,70 @@ async def find_content_blocks(page):
     return blocks
 
 
-# v3.9.7: 辅助函数 - 查找特定块对应的翻页按钮
-async def find_next_button_for_block(page, block_id):
+# v3.9.9: 辅助函数 - 查找特定块对应的翻页按钮
+async def find_next_button_for_block(page, block_id, block_selector):
     """
-    查找特定内容块的下一页按钮
-    对于 layui table，每个表格有自己的翻页控件
+    查找特定内容块的下一页按钮（块级隔离搜索）
+    对于 layui table，每个表格有自己的翻页控件。
+    block_selector: 块的 CSS 选择器，用于限定搜索范围。
     """
+    def scoped_sel(sel, scope):
+        """将选择器限定在 block_selector 范围内"""
+        if not scope or not sel:
+            return sel
+        # 通用文本选择器（text= 或 :has-text）无法加作用域，用 document.querySelectorAll 代替
+        return None  # 标记为需特殊处理
+
     if block_id.startswith('layui_'):
         idx = block_id.replace('layui_', '')
-        # 查找对应索引的 layui table 的翻页按钮
-        selectors = [
+        # 优先用 nth-child/nth-of-type 精确定位到对应表格的分页区
+        base_selectors = [
             f'.layui-table-view:nth-of-type({int(idx)+1}) .layui-laypage-next',
             f'.layui-table-view:nth-of-type({int(idx)+1}) [data-page]',
             f'.layui-table-view:nth-of-type({int(idx)+1}) a[href="javascript:;"][class*="next"]',
+            f'.layui-table-view:nth-of-type({int(idx)+1}) .layui-table-page',
         ]
     elif block_id.startswith('table_'):
-        # 普通表格，使用通用选择器
-        selectors = [
-            'text="下一页"',
-            'a:has-text("下一页")',
-            'button:has-text("下一页")',
+        base_selectors = [
+            f'{block_selector} tbody + .layui-laypage a[href*="javascript"]',
+            f'{block_selector} a[href*="javascript"][class*="next"]',
+            f'{block_selector} text="下一页"',
         ]
     else:
-        # 其他块，使用通用选择器
-        selectors = [
-            'text="下一页"',
-            'a:has-text("下一页")',
-            'button:has-text("下一页")',
-            'a:has-text(">")',
-            '.layui-laypage-next',
-            '[aria-label="下一页"]'
+        base_selectors = [
+            f'{block_selector} .layui-laypage-next',
+            f'{block_selector} [aria-label="下一页"]',
+            f'{block_selector} a[href*="javascript"][class*="next"]',
         ]
-    
-    for sel in selectors:
+
+    # 对有作用域的选择器，在块范围内搜索
+    for sel in base_selectors:
         try:
-            btn = await page.query_selector(sel)
-            if btn:
-                return btn
+            # 使用 page.locator + first() 在块范围内查找
+            locator = page.locator(sel).first
+            if await locator.count() > 0:
+                btn = await locator.element_handle()
+                if btn:
+                    return btn
         except:
             continue
-    
-    # 如果特定选择器没找到，使用通用选择器
-    return (
-        await page.query_selector('text="下一页"') or
-        await page.query_selector('a:has-text("下一页")') or
-        await page.query_selector('button:has-text("下一页")') or
-        await page.query_selector('a:has-text(">")') or
-        await page.query_selector('.layui-laypage-next') or
-        await page.query_selector('[aria-label="下一页"]')
-    )
+
+    # 备选：在块内用文本查找"下一页"
+    try:
+        block_el = await page.query_selector(block_selector)
+        if block_el:
+            all_btns = await block_el.query_selector_all('a, button')
+            for btn in all_btns:
+                txt = (await btn.inner_text()).strip()
+                cls = (await btn.get_attribute('class')) or ''
+                if '下一页' in txt or '>' in txt or 'next' in cls.lower():
+                    disabled = await btn.getAttribute('disabled')
+                    if disabled is None and 'disabled' not in cls.lower():
+                        return btn
+    except:
+        pass
+
+    return None
 
 # ==================== 🧬 模糊语义匹配 ====================
 
@@ -651,14 +663,6 @@ async def final_download(page, results, filter_criteria=None, custom_save_dir=No
             for link in d_links:
                 attachment_name = (await link.inner_text()).strip() or "附件"
                 if any(ext in attachment_name.lower() for ext in ['.pdf', '.doc', '.xls', '指导原则', '表', '说明', '附件']):
-                    # v3.9.9: 多重过滤——附件标题必须同时包含所有关键词，方可下载
-                    fc = filter_criteria or []
-                    if fc:
-                        combined_text = (attachment_name + ' ' + r['text'] + ' ' + r['full_row']).lower()
-                        if not all(q.lower() in combined_text for q in fc):
-                            log(f"    ⛔ 附件'{attachment_name}'不满足多关键词过滤{fc}，跳过")
-                            continue
-                    clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_attach = re.sub(r'[\\/:*?"<>|]', '_', attachment_name)
 
@@ -670,6 +674,15 @@ async def final_download(page, results, filter_criteria=None, custom_save_dir=No
                     # 2. 判定标题是否已经"你中有我"(针对那种附件名就是通告全名的情况)
                     core_title = re.sub(r'^关于公开征求《?|》?等.*$', '', clean_title)
                     is_already_contained = core_title[:10] in clean_attach or clean_attach[:10] in core_title
+
+                    # v3.9.9: 多重过滤——附件级关键词过滤，仅对辅助文件（非正文）生效
+                    # 正文文件（is_main_doc=True）已通过"指导原则"等权威关键词验证，跳过此过滤
+                    fc = filter_criteria or []
+                    if fc and not is_main_doc and not is_already_contained:
+                        combined_text = (attachment_name + ' ' + r['text'] + ' ' + r['full_row']).lower()
+                        if not all(q.lower() in combined_text for q in fc):
+                            log(f"    ⛔ 附件'{attachment_name}'不满足多关键词过滤{fc}，跳过")
+                            continue
 
                     if is_main_doc or is_already_contained:
                         # 正文文件,或附件名已包含主旨 -> 直接用附件名
@@ -1100,147 +1113,11 @@ async def smart_interact_noexp(page, intent, try_date_only=False, search_var=Non
 
 
 # ---------- 无经验分支：链接提取 ----------
-async def get_links_noexp(page, search_keyword=None):
+async def get_links_noexp(page, search_keyword=None, block_selector=None):
     """
-    无经验分支专用链接提取函数（v3.9.5通用版）
-    与 get_links_by_text_content_v2() 逻辑相同
+    v3.9.9: 直接委托给 get_links_by_text_content_v2，保持 JS 逻辑单一来源。
     """
-    return await page.evaluate(r'''
-        (searchKeyword) => {
-        const keyword = searchKeyword || '';
-        const kwLower = keyword.toLowerCase();
-
-        const bodyText = (document.body.innerText || document.body.textContent || '');
-        const bodyLen = bodyText.trim().length;
-        if (bodyLen === 0) return [];
-
-        const walker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-            null
-        );
-
-        const allTextNodes = [];
-        let node;
-        while (node = walker.nextNode()) {
-            const text = (node.nodeValue || '').trim();
-            if (text.length > 2 && text.length < 500) {
-                allTextNodes.push({
-                    node: node,
-                    text: text,
-                    parent: node.parentElement
-                });
-            }
-        }
-
-        const keywordNodes = [];
-
-        if (kwLower) {
-            const directMatch = allTextNodes.filter(tn => tn.text.toLowerCase().includes(kwLower));
-            if (directMatch.length > 0) {
-                keywordNodes.push(...directMatch);
-            } else {
-                for (const tn of allTextNodes) {
-                    let container = tn.parent;
-                    let depth = 0;
-                    while (container && depth < 5) {
-                        const containerText = (container.innerText || '').toLowerCase();
-                        if (containerText.includes(kwLower)) {
-                            keywordNodes.push(tn);
-                            break;
-                        }
-                        container = container.parentElement;
-                        depth++;
-                    }
-                }
-            }
-        } else {
-            keywordNodes.push(...allTextNodes);
-        }
-
-        if (keywordNodes.length === 0) {
-            return [];
-        }
-
-        const results = [];
-        const seenHrefs = new Set();
-
-        for (const kNode of keywordNodes) {
-            let block = kNode.parent;
-            let depth = 0;
-            while (block && depth < 10) {
-                const tag = block.tagName;
-                if (tag === 'DIV' || tag === 'LI' || tag === 'TR' || tag === 'TD' || tag === 'A' || tag === 'ARTICLE') {
-                    break;
-                }
-                block = block.parentElement;
-                depth++;
-            }
-            const container = block || document.body;
-
-            const containerText = container.innerText || '';
-            let date = null;
-            const dateM = containerText.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
-            if (dateM) {
-                date = dateM[1] + '.' + dateM[2].padStart(2,'0') + '.' + dateM[3].padStart(2,'0');
-            }
-
-            const allLinks = [];
-            
-            if (container.tagName === 'A' && container.href) {
-                allLinks.push(container);
-            } else {
-                allLinks.push(...container.querySelectorAll('a[href]'));
-                
-                let linkCandidate = kNode.parent;
-                let linkDepth = 0;
-                while (linkCandidate && linkDepth < 5) {
-                    if (linkCandidate.tagName === 'A' && linkCandidate.href && !allLinks.includes(linkCandidate)) {
-                        allLinks.push(linkCandidate);
-                        break;
-                    }
-                    linkCandidate = linkCandidate.parentElement;
-                    linkDepth++;
-                }
-            }
-
-            for (const link of allLinks) {
-                const href = link.href;
-                const linkText = (link.innerText || '').trim();
-                const linkContainerText = (link.parentElement ? link.parentElement.innerText : '').trim();
-                
-                if (!href || !href.startsWith('http') || href.includes('javascript')) continue;
-                if (linkText.length < 3) continue;
-                if (seenHrefs.has(href)) continue;
-
-                const textToCheck = (linkText + ' ' + linkContainerText).toLowerCase();
-                if (kwLower && !textToCheck.includes(kwLower)) continue;
-
-                seenHrefs.add(href);
-                results.push({
-                    href: href,
-                    text: linkText,
-                    full_row: (container.innerText || '').replace(/\s+/g, ' ').trim(),
-                    date: date
-                });
-            }
-        }
-
-        const noiseIndicators = ['copyright', '版权所有', '登录', '注册', '更多', '更多>'];
-        const contentIndicators = ['指导原则', '办法', '规程', '通知', '公告', '意见', '规范', '准则', '要求', '技术', '指引', '原则'];
-
-        const filtered = results.filter(r => {
-            const row = (r.full_row || '') + (r.text || '');
-            if (noiseIndicators.every(n => !row.includes(n))) {
-                if (!contentIndicators.some(c => row.includes(c)) && r.text.length < 15) {
-                    return false;
-                }
-            }
-            return row.length >= 10;
-        });
-
-        return filtered;
-    }''', search_keyword)
+    return await get_links_by_text_content_v2(page, search_keyword, block_selector)
 
 
 # ---------- 无经验分支：探索引擎（多策略版） ----------
@@ -1296,10 +1173,11 @@ async def explore_with_pagination_noexp(page, intent, exploration_points):
             # v3.9.7: 对每个块分别翻页提取
             for block_idx, block_id in enumerate(blocks):
                 block_label = blocks[block_id].get('label', f'块{block_idx+1}')
-                log(f"    📄 处理块: {block_label}")
+                block_sel = blocks[block_id].get('selector', '')
+                log(f"    📄 处理块: {block_label} (selector={block_sel})")
                 
-                # 提取当前块当前页结果
-                page_links = await get_links_noexp(page, sv)
+                # 提取当前块当前页结果（块级隔离）
+                page_links = await get_links_noexp(page, sv, block_sel)
                 if page_links:
                     log(f"    📋 [{block_label}] 首次扫描: 找到 {len(page_links)} 条")
                     for dl in page_links[:3]:
@@ -1323,7 +1201,7 @@ async def explore_with_pagination_noexp(page, intent, exploration_points):
                 while True:
                     try:
                         # v3.9.7: 针对特定块查找翻页按钮
-                        next_btn = await find_next_button_for_block(page, block_id)
+                        next_btn = await find_next_button_for_block(page, block_id, block_sel)
                         
                         if not next_btn:
                             log(f"    📄 [{block_label}] 第{p_idx-1}页已完成，未找到下一页按钮")
@@ -1346,7 +1224,7 @@ async def explore_with_pagination_noexp(page, intent, exploration_points):
                         await wait_page_stable_noexp(page)
                         
                         # 提取当前页
-                        page_links = await get_links_noexp(page, sv)
+                        page_links = await get_links_noexp(page, sv, block_sel)
                         log(f"    📄 [{block_label}] 第{p_idx}页: 找到 {len(page_links)} 条")
                         
                         # 应用策略级过滤
