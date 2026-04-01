@@ -675,13 +675,15 @@ async def final_download(page, results, filter_criteria=None, custom_save_dir=No
                     core_title = re.sub(r'^关于公开征求《?|》?等.*$', '', clean_title)
                     is_already_contained = core_title[:10] in clean_attach or clean_attach[:10] in core_title
 
-                    # v3.9.9: 多重过滤——附件级关键词过滤，仅对辅助文件（非正文）生效
-                    # 正文文件（is_main_doc=True）已通过"指导原则"等权威关键词验证，跳过此过滤
+                    # v3.9.9 修复: fc 过滤对所有附件生效（不再因 is_main_doc 而跳过）
+                    # 只有明确无关的噪音附件（如意见反馈表）才直接放行
                     fc = filter_criteria or []
-                    if fc and not is_main_doc and not is_already_contained:
-                        combined_text = (attachment_name + ' ' + r['text'] + ' ' + r['full_row']).lower()
-                        if not all(q.lower() in combined_text for q in fc):
-                            log(f"    ⛔ 附件'{attachment_name}'不满足多关键词过滤{fc}，跳过")
+                    is_noise = any(k in clean_attach for k in ['反馈表', '意见反馈表']) and not any(k in clean_attach for k in ['指导原则', '征求意见稿', '试行'])
+                    if fc and not is_noise:
+                        # 对附件名本身 + 通告标题进行 all() 过滤
+                        text_to_check = (clean_attach + ' ' + r['text']).lower()
+                        if not all(q.lower() in text_to_check for q in fc):
+                            log(f"    ⛔ 附件'{attachment_name}'不含全部关键词{fc}，跳过")
                             continue
 
                     if is_main_doc or is_already_contained:
