@@ -7,7 +7,7 @@
 更新:Cortana全程主导探索
 """
 
-import asyncio, sys, re, os, random, time, subprocess, yaml
+import asyncio, sys, re, os, random, time, subprocess, yaml, traceback
 from pathlib import Path
 from playwright.async_api import async_playwright
 
@@ -500,7 +500,14 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
                         break
                         
         except Exception as e:
-            log(f"⚠️ 探索异常: {e}")
+            err_str = str(e)
+            # 检测 WAF / 反爬拦截特征
+            waf_hints = ['Execution context was destroyed', 'navigation', 'blocked', '403', 'waf', 'cloudflare', 'antibot', 'captcha']
+            is_waf = any(h in err_str.lower() for h in waf_hints)
+            hint = " ⚠️ 疑似WAF/反爬拦截，请检查UA/代理或目标网站访问策略" if is_waf else ""
+            log(f"⚠️ 探索异常: {e}{hint}")
+            if is_waf:
+                log(f"    完整错误: {traceback.format_exc().strip()}")
     return all_results
 
 
@@ -1356,8 +1363,12 @@ async def explore_with_pagination_noexp(page, intent, exploration_points):
                         break
                         
         except Exception as e:
-            log(f"    ⚠️ 探索异常: {e}")
-            continue
+            err_str = str(e)
+            waf_hints = ['Execution context was destroyed', 'navigation', 'blocked', '403', 'waf', 'cloudflare', 'antibot', 'captcha']
+            is_waf = any(h in err_str.lower() for h in waf_hints)
+            hint = " ⚠️ 疑似WAF/反爬拦截" if is_waf else ""
+            log(f"    ⚠️ 探索异常: {e}{hint}")
+    return all_results
     
     return all_results
 
