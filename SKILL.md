@@ -1,10 +1,10 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.9.8
+version: 3.9.9
 ---
 
-# SKILL.md - Guidance Web Access (v3.9.2)
+# SKILL.md - Guidance Web Access (v3.9.9)
 
 ## ⚠️ 执行前提
 
@@ -200,6 +200,7 @@ Cortana 策略序列：
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.9.9 | 2026-04-01 | **三大核心修复**：① `explore_with_pagination_v2` 每块翻页时传入 block_selector，实现块级隔离提取；② 每级提取后立即应用 `all()` 多重过滤再加入结果集；③ `final_download` 新增 filter_criteria 参数，下载前对附件标题精准过滤，所有关键词均匹配才下载 |
 | v3.9.8 | 2026-03-31 | 修复过滤逻辑严重缺陷：将 `any()` 改为 `all()`，确保多关键词搜索时所有词均匹配 |
 | v3.9.7 | 2026-03-31 | 新增多块翻页功能（`find_content_blocks` + `find_next_button_for_block`）+ 移除5页翻页限制，有多少页翻多少页 |
 | v3.9.6 | 2026-03-31 | 无经验分支重构：新增 `explore_with_pagination_noexp()` 多策略探索引擎，`cortana_auto_flow` 支持 `strategies` 参数；新增 `smart_interact_noexp()` 和 `get_links_noexp()` 独立函数 |

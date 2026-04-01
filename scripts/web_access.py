@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.8 (2026-03-31)  # 修复过滤逻辑严重缺陷：将 any() 改为 all()，确保多关键词搜索时所有词均匹配
+版本: 3.9.9 (2026-04-01)  # 多块隔离提取（block_selector传入）+ 提取时实时多重过滤 + final_download附件级filter_criteria精准过滤
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -26,7 +26,7 @@ def log(msg): print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
 # ==================== 🧠 智能化感知与提取 ====================
 
-async def get_links_by_text_content_v2(page, search_keyword=None):
+async def get_links_by_text_content_v2(page, search_keyword=None, block_selector=None):
     """
     v2.9.1: 改进版内容提取器 - 基于"整行提取"策略，适用于表格/列表结构。
     
@@ -35,24 +35,41 @@ async def get_links_by_text_content_v2(page, search_keyword=None):
     再在每行内同时查找文本和链接,确保关键词与链接在同一条目时能正确提取。
     
     适用于CDE等网站的结果页,关键词文本和下载链接可能在同一行的不同单元格中。
+    
+    v3.9.9: 新增 block_selector 参数，支持块级隔离提取，
+            只扫描指定块内的内容，避免跨块重复提取。
     """
     return await page.evaluate(r'''
-        (searchKeyword) => {
+        (searchKeyword, blockSelector) => {
+        const keyword = searchKeyword || '';
+        const kwLower = keyword.toLowerCase();
+
+        // =============================================
+        // 步骤1: 确定扫描根元素（整页 or 特定块）
+        // =============================================
+        let rootElement;
+        if (blockSelector) {
+            rootElement = document.querySelector(blockSelector);
+        }
+        if (!rootElement) {
+            rootElement = document.body;
+        }
+        const rootText = (rootElement.innerText || rootElement.textContent || '');
         const keyword = searchKeyword || '';
         const kwLower = keyword.toLowerCase();
 
         // =============================================
         // 步骤1: 获取 body innerText
         // =============================================
-        const bodyText = (document.body.innerText || document.body.textContent || '');
+        const bodyText = rootText;
         const bodyLen = bodyText.trim().length;
         if (bodyLen === 0) return [];
 
         // =============================================
-        // 步骤2: 用TreeWalker遍历所有文本节点
+        // 步骤2: 用TreeWalker遍历根元素下的所有文本节点
         // =============================================
         const walker = document.createTreeWalker(
-            document.body,
+            rootElement,
             NodeFilter.SHOW_TEXT,
             null
         );
@@ -208,7 +225,7 @@ async def get_links_by_text_content_v2(page, search_keyword=None):
         });
 
         return filtered;
-    }''', search_keyword)
+    }''', search_keyword, block_selector)
 
 # ================================================================
 # v3.0.0: 全扫描+关键词匹配 - 最通用方案
@@ -393,15 +410,27 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
             elif len(blocks) == 1:
                 log(f"    📦 发现 {len(blocks)} 个内容块")
             
-            # v3.9.7: 对每个块分别翻页提取
+            # v3.9.9: 对每个块分别翻页提取（块级隔离）
             for block_idx, block_id in enumerate(blocks):
                 block_label = blocks[block_id].get('label', f'块{block_idx+1}')
-                log(f"    📄 处理块: {block_label}")
+                block_sel = blocks[block_id].get('selector', '')
+                log(f"    📄 处理块: {block_label} (selector={block_sel})")
                 
-                # 提取当前块当前页结果
-                page_links = await get_links_by_text_content_v2(page, sv)
+                # v3.9.9: 提取当前块当前页结果（块级隔离扫描）
+                page_links = await get_links_by_text_content_v2(page, sv, block_sel)
+                
+                # v3.9.9: 多重过滤——每级均过滤，只保留关键词全匹配的结果
+                qualifiers = intent.get('qualifiers', [])
                 if page_links:
-                    log(f"    📋 [{block_label}] 首次扫描: 找到 {len(page_links)} 条")
+                    before = len(page_links)
+                    if qualifiers:
+                        page_links = [
+                            r for r in page_links
+                            if all(q in (r['text'] + r['full_row']) for q in qualifiers)
+                        ]
+                        log(f"    📋 [{block_label}] 首次扫描: {before} 条 → 过滤后 {len(page_links)} 条")
+                    else:
+                        log(f"    📋 [{block_label}] 首次扫描: 找到 {len(page_links)} 条")
                     for dl in page_links[:3]:
                         log(f"       [{dl.get('date','无日期')}] {dl['text'][:50]}...")
                     for l in page_links:
@@ -437,8 +466,16 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
                         await next_btn.click()
                         await wait_page_stable_exp(page)
                         
-                        # 扫描当前页
-                        page_links = await get_links_by_text_content_v2(page, sv)
+                        # v3.9.9: 块级隔离扫描
+                        page_links = await get_links_by_text_content_v2(page, sv, block_sel)
+                        
+                        # v3.9.9: 每页翻完后同样过滤
+                        if qualifiers and page_links:
+                            page_links = [
+                                r for r in page_links
+                                if all(q in (r['text'] + r['full_row']) for q in qualifiers)
+                            ]
+                        
                         log(f"    📄 [{block_label}] 第{p_idx}页: 找到 {len(page_links)} 条")
                         for l in page_links:
                             if l['href'] not in seen:
@@ -590,7 +627,11 @@ def fuzzy_semantic_filter(results, intent):
 
 # ==================== 📥 全要素下载逻辑 ====================
 
-async def final_download(page, results, keyword="", custom_save_dir=None):
+async def final_download(page, results, filter_criteria=None, custom_save_dir=None):
+    """
+    v3.9.9: filter_criteria - 多重过滤关键词列表，
+             下载附件前对附件标题应用 all() 逻辑：所有关键词均需出现在附件标题中。
+    """
     # v3.0.2: 默认目录 + 用户指定目录支持
     if custom_save_dir:
         save_dir = os.path.expanduser(custom_save_dir)
@@ -610,6 +651,14 @@ async def final_download(page, results, keyword="", custom_save_dir=None):
             for link in d_links:
                 attachment_name = (await link.inner_text()).strip() or "附件"
                 if any(ext in attachment_name.lower() for ext in ['.pdf', '.doc', '.xls', '指导原则', '表', '说明', '附件']):
+                    # v3.9.9: 多重过滤——附件标题必须同时包含所有关键词，方可下载
+                    fc = filter_criteria or []
+                    if fc:
+                        combined_text = (attachment_name + ' ' + r['text'] + ' ' + r['full_row']).lower()
+                        if not all(q.lower() in combined_text for q in fc):
+                            log(f"    ⛔ 附件'{attachment_name}'不满足多关键词过滤{fc}，跳过")
+                            continue
+                    clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_title = re.sub(r'[\\/:*?"<>|]', '_', r['text'][:50])
                     clean_attach = re.sub(r'[\\/:*?"<>|]', '_', attachment_name)
 
@@ -726,7 +775,7 @@ async def cortana_execute_flow(cortana_plan):
             log("❌ 未发现匹配项。")
         else:
             log(f"📋 发现 {len(final_list)} 条通告,提取全量附件...")
-            downloaded = await final_download(page, final_list, task, custom_save_dir=save_dir)
+            downloaded = await final_download(page, final_list, filter_criteria=filter_criteria, custom_save_dir=save_dir)
             log(f"🎉 任务完成:共下载 {downloaded} 个关联文件。")
         
         await browser.close()
@@ -1517,7 +1566,7 @@ async def cortana_auto_flow(cortana_plan):
             if filtered and download_enabled:
                 log("📋 开始下载 {} 个文件...".format(len(filtered)))
                 downloaded = await final_download(page, filtered,
-                    cortana_plan.get('task', ''), custom_save_dir=save_dir)
+                    filter_criteria=filter_criteria, custom_save_dir=save_dir)
                 log("🎉 任务完成: 共下载 {} 个文件".format(downloaded))
             elif filtered:
                 log("📋 任务为查找类，不执行下载，共找到 {} 条相关结果".format(len(filtered)))
