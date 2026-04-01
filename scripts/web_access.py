@@ -675,14 +675,13 @@ async def final_download(page, results, filter_criteria=None, custom_save_dir=No
                     core_title = re.sub(r'^关于公开征求《?|》?等.*$', '', clean_title)
                     is_already_contained = core_title[:10] in clean_attach or clean_attach[:10] in core_title
 
-                    # v3.9.9 修复: fc 过滤对所有附件生效（不再因 is_main_doc 而跳过）
-                    # 只有明确无关的噪音附件（如意见反馈表）才直接放行
+                    # v3.9.9 修复: fc 过滤只看附件名本身，不依赖通告标题
+                    # 通报警告栏常含多主题正文，导致误判
                     fc = filter_criteria or []
                     is_noise = any(k in clean_attach for k in ['反馈表', '意见反馈表']) and not any(k in clean_attach for k in ['指导原则', '征求意见稿', '试行'])
                     if fc and not is_noise:
-                        # 对附件名本身 + 通告标题进行 all() 过滤
-                        text_to_check = (clean_attach + ' ' + r['text']).lower()
-                        if not all(q.lower() in text_to_check for q in fc):
+                        # 只检查附件名本身：所有关键词必须同时出现在文件名中
+                        if not all(q.lower() in clean_attach.lower() for q in fc):
                             log(f"    ⛔ 附件'{attachment_name}'不含全部关键词{fc}，跳过")
                             continue
 
