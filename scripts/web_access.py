@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 通用网页访问工具(全要素泛化版)
-版本: 3.9.12 (2026-04-01)  # 最终修复：fc过滤只看附件名本身，多块翻页作用域隔离，正文/辅助附件双重判定
+版本: 3.9.13 (2026-04-01)  # UA池轮换（8个UA随机选取）+ find_content_blocks增强识别7种块类型+find_next_button_for_block增强翻页按钮匹配
 核心逻辑:语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v3.0.0 全扫描+关键词匹配方案）
 核心逻辑：语义级文件名智能判定 + 主体词/限定词语义分级 + 通用文本内容提取（v2.9.0 AI协同决策）
 更新:Cortana全程主导探索
@@ -14,11 +14,25 @@ from playwright.async_api import async_playwright
 # ==================== 配置 ====================
 CONFIG = { 'headless': False, 'timeout': 60000 }
 BROWSER_ARGS = ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage']
-UA_POOL = ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36']
+# v3.9.13: UA 池轮换，多浏览器/多版本覆盖，降低反爬识别率
+UA_POOL = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0',
+]
 CDE_ENTRY_PAGES = {
     '指导原则': 'https://www.cde.org.cn/zdyz/index',
     '发布通告': 'https://www.cde.org.cn/main/xxgk/listpage/9f9c74c73e0f8f56a8bfbc646055026d'
 }
+
+def get_random_ua():
+    """每次调用随机选取一个 User-Agent，降低被反爬识别概率"""
+    return random.choice(UA_POOL)
 
 def log(msg): print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
@@ -493,16 +507,26 @@ async def explore_with_pagination_v2(page, intent, exploration_points):
 # v3.9.7: 辅助函数 - 识别页面中的多个内容块
 async def find_content_blocks(page):
     """
-    识别页面中的多个内容块（如 layui table、分类表格等）
+    v3.9.13: 增强版块识别，覆盖更多内容结构类型。
+    
+    支持：
+    1. layui 表格（.layui-table-view）
+    2. classContent 系列（.fbtgList 等）
+    3. Tab 面板（el-tab-pane、ant-tabs-tabpane 等）
+    4. 虚拟滚动容器（__v内、virtual-list、infinite-scroll）
+    5. 通用卡片列表（article-card、news-item、.list-item）
+    6. 表格（table with tbody）
+    7. 分类列表（ul/ol 列表，带翻页控件）
+    
     返回: dict{block_id: {label, selector}}
     """
     blocks = await page.evaluate(r'''() => {
         const result = {};
+        let blockIdx = 0;
         
-        // 方案1: 查找 layui table 组件
+        // ===== 方案1: layui 表格组件 =====
         const layuiTables = document.querySelectorAll('.layui-table-view');
         layuiTables.forEach((table, idx) => {
-            // 尝试获取表格标题（如"发布通告"、"征求意见"等）
             let label = '表格' + (idx + 1);
             const header = table.querySelector('.layui-table-header');
             if (header) {
@@ -511,18 +535,17 @@ async def find_content_blocks(page):
                     label = firstHeader.innerText.trim();
                 }
             }
-            // 也尝试从父容器的标题获取
             const prevSibling = table.previousElementSibling;
             if (prevSibling && prevSibling.classList && prevSibling.classList.contains('el-divider')) {
                 label = prevSibling.innerText.trim() || label;
             }
-            result['layui_' + idx] = {label: label, selector: '.layui-table-view:nth-child(' + (idx + 1) + ')'};
+            const selector = '.layui-table-view:nth-of-type(' + (idx + 1) + ')';
+            result['layui_' + blockIdx++] = {label: label, selector: selector};
         });
         
-        // 方案2: 查找带翻页的内容块（classContent 系列）
+        // ===== 方案2: classContent 系列 =====
         const classContents = document.querySelectorAll('.classContent');
         classContents.forEach((content, idx) => {
-            // 获取块标签（如 fbtgList、zqyjtzList 等）
             const className = content.className.split(' ').find(c => c.endsWith('List'));
             if (className) {
                 const prev = content.previousElementSibling;
@@ -534,10 +557,76 @@ async def find_content_blocks(page):
             }
         });
         
-        // 方案3: 查找所有表格
+        // ===== 方案3: Tab 面板（el-tab-content / ant-tabs / tab-pane） =====
+        const tabSelectors = [
+            '.el-tab-pane',
+            '.ant-tabs-tabpane',
+            '[role="tabpanel"]',
+            '.tab-pane',
+            '.ivu-tabs-tabpane',
+            '[class*="tab-pane"][class*="content"]'
+        ];
+        tabSelectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach((pane, idx) => {
+                const id = pane.id || '';
+                const label = id || ('Tab页' + (idx + 1));
+                const selector = id ? '#' + id : sel + ':nth-of-type(' + (idx + 1) + ')';
+                if (!result['tab_' + idx]) {
+                    result['tab_' + idx] = {label: label, selector: selector};
+                }
+            });
+        });
+        
+        // ===== 方案4: 虚拟滚动 / 无限滚动容器 =====
+        const virtSelectors = [
+            '[class*="virtual-list"]',
+            '[class*="infinite-scroll"]',
+            '[class*="recruit-list"]',
+            '[class*="result-list"]',
+            '[data-virtual-list]',
+            '[class*="scroll-content"]'
+        ];
+        virtSelectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach((el, idx) => {
+                const label = el.className.split(' ').find(c => /list|content|result/i.test(c)) || '虚拟滚动' + (idx + 1);
+                result['virt_' + idx] = {label: label, selector: sel + ':nth-of-type(' + (idx + 1) + ')'};
+            });
+        });
+        
+        // ===== 方案5: 通用卡片/文章列表 =====
+        const cardSelectors = [
+            'article',
+            '.article-card',
+            '.news-item',
+            '.list-item[itemscope]',
+            '[class*="article-list"] > div',
+            '[class*="news-list"] > div',
+            '[class*="result-item"]'
+        ];
+        cardSelectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach((card, idx) => {
+                const text = card.innerText.substring(0, 30).replace(/\s+/g, ' ').trim();
+                if (text.length > 5) {
+                    const label = text.substring(0, 15);
+                    result['card_' + idx] = {label: label, selector: sel + ':nth-of-type(' + (idx + 1) + ')'};
+                }
+            });
+        });
+        
+        // ===== 方案6: 带分页的 ul/ol 分类列表 =====
+        document.querySelectorAll('ul, ol').forEach((list, idx) => {
+            if (list.querySelector('li') && list.querySelectorAll('li').length >= 3) {
+                const hasPager = list.closest('.container, .content, main, #main')?.querySelector('[class*="pager"], [class*="pagination"], [class*="page"]');
+                if (hasPager) {
+                    const selector = 'ul:nth-of-type(' + idx + '), ol:nth-of-type(' + idx + ')';
+                    result['list_' + idx] = {label: '列表' + (idx + 1), selector: selector};
+                }
+            }
+        });
+        
+        // ===== 方案7: 表格兜底 =====
         if (Object.keys(result).length === 0) {
-            const tables = document.querySelectorAll('table');
-            tables.forEach((table, idx) => {
+            document.querySelectorAll('table').forEach((table, idx) => {
                 if (table.querySelector('tbody')) {
                     result['table_' + idx] = {label: '表格' + (idx + 1), selector: 'table:nth-of-type(' + (idx + 1) + ')'};
                 }
@@ -549,23 +638,14 @@ async def find_content_blocks(page):
     return blocks
 
 
-# v3.9.9: 辅助函数 - 查找特定块对应的翻页按钮
+# v3.9.13: 辅助函数 - 查找特定块对应的翻页按钮（增强版）
 async def find_next_button_for_block(page, block_id, block_selector):
     """
-    查找特定内容块的下一页按钮（块级隔离搜索）
-    对于 layui table，每个表格有自己的翻页控件。
+    查找特定内容块的下一页按钮（块级隔离搜索）。
     block_selector: 块的 CSS 选择器，用于限定搜索范围。
     """
-    def scoped_sel(sel, scope):
-        """将选择器限定在 block_selector 范围内"""
-        if not scope or not sel:
-            return sel
-        # 通用文本选择器（text= 或 :has-text）无法加作用域，用 document.querySelectorAll 代替
-        return None  # 标记为需特殊处理
-
     if block_id.startswith('layui_'):
         idx = block_id.replace('layui_', '')
-        # 优先用 nth-child/nth-of-type 精确定位到对应表格的分页区
         base_selectors = [
             f'.layui-table-view:nth-of-type({int(idx)+1}) .layui-laypage-next',
             f'.layui-table-view:nth-of-type({int(idx)+1}) [data-page]',
@@ -578,17 +658,36 @@ async def find_next_button_for_block(page, block_id, block_selector):
             f'{block_selector} a[href*="javascript"][class*="next"]',
             f'{block_selector} text="下一页"',
         ]
+    elif block_id.startswith('virt_') or block_id.startswith('card_'):
+        # 虚拟滚动/卡片列表：查找"加载更多"按钮
+        base_selectors = [
+            f'{block_selector} [class*="load-more"]',
+            f'{block_selector} [class*="loadMore"]',
+            f'{block_selector} button:has-text("加载更多")',
+            f'{block_selector} a:has-text("加载更多")',
+            f'{block_selector} [class*="more"]:not([class*="no-more"])',
+            f'{block_selector} [aria-label*="加载"]',
+        ]
+    elif block_id.startswith('tab_'):
+        # Tab 页：Tab 切换由 explore 层处理，这里只找块内分页
+        base_selectors = [
+            f'{block_selector} .layui-laypage-next',
+            f'{block_selector} [class*="pagination"] a',
+            f'{block_selector} [class*="pager"] a',
+        ]
     else:
+        # 通用：查找各类分页控件
         base_selectors = [
             f'{block_selector} .layui-laypage-next',
             f'{block_selector} [aria-label="下一页"]',
             f'{block_selector} a[href*="javascript"][class*="next"]',
+            f'{block_selector} [class*="pagination"] a[class*="next"]',
+            f'{block_selector} [class*="pager"] a[class*="next"]',
         ]
 
-    # 对有作用域的选择器，在块范围内搜索
+    # 在块范围内搜索
     for sel in base_selectors:
         try:
-            # 使用 page.locator + first() 在块范围内查找
             locator = page.locator(sel).first
             if await locator.count() > 0:
                 btn = await locator.element_handle()
@@ -597,7 +696,7 @@ async def find_next_button_for_block(page, block_id, block_selector):
         except:
             continue
 
-    # 备选：在块内用文本查找"下一页"
+    # 备选：在块内用文本查找各类翻页标识
     try:
         block_el = await page.query_selector(block_selector)
         if block_el:
@@ -605,8 +704,14 @@ async def find_next_button_for_block(page, block_id, block_selector):
             for btn in all_btns:
                 txt = (await btn.inner_text()).strip()
                 cls = (await btn.get_attribute('class')) or ''
-                if '下一页' in txt or '>' in txt or 'next' in cls.lower():
-                    disabled = await btn.getAttribute('disabled')
+                attrs = (await btn.get_attribute('aria-label')) or ''
+                # 更多翻页关键词
+                if any(k in txt or k in cls or k in attrs for k in [
+                    '下一页', '下页', 'next', 'Next', '>',
+                    '加载更多', 'load more', 'Load More',
+                    'more-results', 'view-more'
+                ]):
+                    disabled = await btn.get_attribute('disabled')
                     if disabled is None and 'disabled' not in cls.lower():
                         return btn
     except:
@@ -734,8 +839,10 @@ async def cortana_execute_flow(cortana_plan):
     save_dir = cortana_plan.get('save_dir')
     
     async with async_playwright() as p:
+        ua = get_random_ua()
         browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
         page = await browser.new_page()
+        await page.set_extra_http_headers({'User-Agent': ua})
         await page.add_init_script('''() => {
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             delete navigator.__proto__.webdriver;
@@ -1415,8 +1522,10 @@ async def cortana_auto_flow(cortana_plan):
     all_results = []
 
     async with async_playwright() as p:
+        ua = get_random_ua()
         browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
         page = await browser.new_page()
+        await page.set_extra_http_headers({'User-Agent': ua})
         await page.add_init_script('''() => {
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             delete navigator.__proto__.webdriver;
@@ -1492,8 +1601,10 @@ async def cortana_perception_flow(cortana_plan):
     log(f"📌 起始URL: {base_url}")
     
     async with async_playwright() as p:
+        ua = get_random_ua()
         browser = await p.chromium.launch(headless=False, args=BROWSER_ARGS)
         page = await browser.new_page()
+        await page.set_extra_http_headers({'User-Agent': ua})
         await page.add_init_script('''() => {
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             delete navigator.__proto__.webdriver;

@@ -1,7 +1,7 @@
 ---
 name: guidance-web-access
 description: 医药法规网页访问与自动下载工具。用于指导原则页面探索、精准搜索、界面感知输入与增量下载。触发条件：用户提到"网页访问"、"下载法规"、"指导原则"、"搜索法规"、"web-access"时使用。
-version: 3.9.12
+version: 3.9.13
 ---
 
 # SKILL.md - Guidance Web Access (v3.9.9)
@@ -200,6 +200,7 @@ Cortana 策略序列：
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.9.13 | 2026-04-01 | UA池轮换（8个UA随机选取，降低反爬识别）+ find_content_blocks增强识别7种块类型（Tab面板/虚拟滚动/卡片列表等）+ find_next_button_for_block增强翻页按钮匹配 |
 | v3.9.12 | 2026-04-01 | fc过滤只看附件名本身，不依赖通告标题，避免多主题同通告时的误判 |
 | v3.9.11 | 2026-04-01 | 修复fc过滤被is_main_doc误绕过的bug：正文文件也需通过fc过滤 |
 | v3.9.10 | 2026-04-01 | 修复find_next_button_for_block整页搜索bug，重构get_links_noexp为委托模式 |
